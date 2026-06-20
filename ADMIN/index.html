@@ -1,128 +1,67 @@
 <!DOCTYPE html>
 <html lang="it">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>DelApp - Gestione Operativa</title>
-    <link rel="stylesheet" href="master_fico.css">
-    
-    <style>
-        body {
-            display: flex;
-            flex-direction: column;
-            margin: 0;
-            padding: 0;
-            min-height: 100vh;
-            background-color: #f8fafc;
-        }
-        .topbar {
-            width: 100%;
-            position: relative;
-            z-index: 1010;
-        }
-        .app-main-container {
-            display: flex;
-            flex: 1;
-            width: 100%;
-            position: relative;
-        }
-        .sidebar {
-            /* Forza la sidebar a posizionarsi sotto l'header senza fluttuare */
-            position: relative !important; 
-            top: 0 !important;
-            height: auto !important;
-            min-height: calc(100vh - 86px);
-        }
-        .main-content {
-            flex: 1;
-            padding: 2rem;
-            background-color: #f8fafc;
-        }
-    </style>
+<link rel="manifest" href="./assets/manifest.webmanifest">
+<meta name="theme-color" content="#ffffff ">
+	<meta name="mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-title" content="Agenda">
+<link rel="apple-touch-icon" href="./assets/images/logo2.png">
+  <meta charset="UTF-8">
+  <title>delApp</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <style>
+   html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      /* SFONDO VIOLA SFUMATO (come l’immagine) */
+      background:
+        radial-gradient(
+          circle at center,
+          #ffffff  0%,
+          #ffffff 35%,
+          #ffffff 65%,
+          #ffffff 100%
+        );
+    }
+.logo {
+  width: 380px;
+  max-width: 80%;
+  opacity: 0;
+  transform: scale(0.95);
+  animation: fadeZoom 3s ease-in-out forwards;
+}
+
+@keyframes fadeZoom {
+  0%   { opacity: 0; transform: scale(0.95); }
+  20%  { opacity: 1; transform: scale(1); }
+  70%  { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.05); }
+}
+  </style>
 </head>
+
 <body>
-    
-    <header class="topbar" style="background: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 0.5rem 2rem;">
-        <div class="wrap" style="display: flex; align-items: center; width: 100%; gap: 1rem;">
-            <div class="logo-wrap">
-                 <img src="./assets/images/logo2.png" alt="Logo" width="70" height="70" class="logo-img">
-              </a>
-            </div>
-            <div class="title-block">
-              <h1 id="pageTitle" style="margin:0; font-size: 1.6rem; font-weight: 700; color: #0f172a;">DelApp</h1>
-              <p id="pageSubtitle" style="margin:0; font-size: 0.85rem; color: #64748b; font-weight: 500;">Gestionale</p>
-            </div>
-            
-            <div style="flex:1"></div>
-            
-            <div class="user-chip-wrap" id="userArea" style="display:none; position: relative;">
-              <button class="user-chip" id="userBtn" aria-label="Menu Utente" style="cursor: pointer; background: #f1f5f9; border: 1px solid #e2e8f0; padding: 0.5rem; border-radius: 50%;">
-                <span class="avatar" id="userAvatar">👤</span>
-              </button>
-              
-              <div class="logo-menu" id="userMenu" style="display: none; position: absolute; right: 0; top: 100%; background: #1e293b; color: white; padding: 10px; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); z-index: 1020; min-width: 160px; margin-top: 8px;">
-                <div class="logo-menu__item" style="cursor:default; opacity:0.7; border-bottom:1px solid rgba(255,255,255,0.1); margin-bottom:5px; padding: 4px 8px;">
-                   <small id="userNameDisplay">Utente</small>
-                </div>
-                
-                <button class="logo-menu__item" id="btnLogout" style="width: 100%; text-align: left; background: transparent; border: none; color:#ef4444; margin-top:5px; padding: 6px 8px; cursor: pointer; font-weight: 600; font-size: 0.85rem;">🚪 Logout</button>
-              </div>
-            </div>
-        </div>
-    </header>
 
-    <div class="app-main-container">
-        
-        <nav class="sidebar" id="app-sidebar">
-            <ul class="nav-links">
-                <li><a href="#" class="active" data-view="dashboard">Dashboard Admin</a></li>
-                <li><a href="#" data-view="tasks">Task</a></li>
-                <li><a href="#" data-view="rooms">Strutture</a></li>
-                 <li><a href="#" data-view="staff">Staff</a></li>
-            </ul>
- <!-- Pulsante "Nuovo Task" perfettamente allineato al padding della Sidebar -->
-<div style="
-    position: absolute; 
-    bottom: calc(var(--spacing-md) + 60px); /* Si posiziona sopra il profilo (assumendo il profilo alto circa 50-60px) */
-    left: var(--spacing-md); 
-    width: calc(100% - (var(--spacing-md) * 2)); 
-    box-sizing: border-box; 
-    z-index: 10;
-">
-    <button onclick="changeView('add-task')" style="
-        width: 100%;
-        background: #3b82f6;
-        color: white;
-        border: none;
-        border-radius: 12px;
-        padding: 0.85rem 1rem;
-        font-weight: 700;
-        font-size: 0.95rem;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 0.5rem;
-        box-shadow: 0 4px 10px rgba(59, 130, 246, 0.3);
-        transition: all 0.2s ease;
-    " onmouseover="this.style.background='#2563eb'; this.style.transform='translateY(-2px)';" 
-      onmouseout="this.style.background='#3b82f6'; this.style.transform='translateY(0)';"
-    >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-        Nuovo Task
-    </button>
-</div>
-            
-        </nav>
+  <img src="./assets/images/logo2.png" alt="delApp logo with stylized modern lettering on a dark purple gradient background representing a polished digital agenda app" class="logo">
 
-        <main class="main-content" id="app-content">
-            <section id="view-container" class="view-container">
-                </section>
-        </main>
+ <script type="module" src="./functions/index.js"></script>
 
-    </div>
- <!-- Contenitore per le Finestre Modali (Popup) -->
-    <div id="modal-container"></div>
-    <script type="module" src="functions/index.js"></script>
 </body>
 </html>
+
+
+
+
+
+
+
