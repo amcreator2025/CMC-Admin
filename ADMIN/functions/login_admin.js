@@ -27,7 +27,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
         if (error) throw error;
 
         // Se arriva qui, il token è stato generato e salvato. Rimandiamo alla dashboard!
-        window.location.href = 'reindex.html';
+        window.location.href = 'index.html';
 
     } catch (err) {
         console.error("Errore Auth:", err.message);

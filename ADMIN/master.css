@@ -29,69 +29,21 @@ body { font-family: var(--font-family); background-color: var(--bg-app); color: 
 /* =========================================
    LAYOUT STRUTTURALE
 ========================================= */
-.sidebar {
-    width: 250px;
-    background-color: var(--bg-surface);
-    border-right: 1px solid var(--border-color);
-
-    display: flex;         
-    position: relative;     /* ✅ Aggiunto per fare da base al bottone assoluto */
-    flex-direction: column;
-    justify-content: space-between; 
-
-    padding: var(--spacing-md);
-    height: 100vh;
-    box-sizing: border-box; /* ✅ Fondamentale per non far strabordare la barra dallo schermo */
-}
-.user-profile {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-
-    text-align: center;
-    margin-top: auto;
-    padding-top: 20px;
-      
-}
-
-.user-profile .logo {
-    width: 150px;
-    height: auto;
-    margin-bottom: 10px;
-}
-
-#current-user-name {
-    font-weight: 600;
-    color: var(--primary-color);
-}
+.sidebar { width: 250px; background-color: var(--bg-surface); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; padding: var(--spacing-md); }
+.logo { font-size: 1.5rem; font-weight: 700; margin-bottom: 2rem; letter-spacing: -0.5px; }
 .nav-links { list-style: none; flex-grow: 1; }
 .nav-links a { display: block; padding: 0.75rem 1rem; color: var(--text-muted); text-decoration: none; border-radius: var(--radius-sm); margin-bottom: 0.5rem; transition: all 0.2s ease; }
-.nav-links a.active{ background: linear-gradient(135deg, #3B82F6, var(--accent));
-            color: var(--primary-color);
-            border: none;
-            padding: 1.25rem;
-            border-radius: 18px;
-            font-size: 1.1rem;
-            font-weight: 700;
-            margin-top: 1.5rem;
-            cursor: pointer;
-            box-shadow: 0 10px 25px -6px rgba(37, 99, 235, 0.5); /* Ombra in tinta */
-            }
+.nav-links a.active, .nav-links a:hover { background-color: var(--bg-app); color: var(--primary-color); font-weight: 500; }
 .main-content { flex-grow: 1; display: flex; flex-direction: column; overflow-y: auto; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: var(--spacing-md) 2rem; background-color: var(--bg-surface); border-bottom: 1px solid var(--border-color); }
-#view-container { /* Sostituisci con il selettore corretto del tuo container */
-    overflow-y: auto !important;
-    max-height: calc(100vh - 80px) !important;
-    padding-bottom: 50rem !important;
-    box-sizing: border-box;
-}
+.view-container { padding: 2rem; }
 
 /* =========================================
    COMPONENTI GENERALI E BOTTONI
 ========================================= */
 .card { background-color: var(--bg-surface); border-radius: var(--radius-lg); padding: 1.5rem; box-shadow: var(--shadow-sm); border: 1px solid var(--border-color); }
-
+.btn-primary { background-color: var(--accent-color); color: white; border: none; padding: 0.65rem 1.2rem; border-radius: var(--radius-sm); font-weight: 500; cursor: pointer; transition: background-color 0.2s; }
+.btn-primary:hover { background-color: #1D4ED8; }
 .btn-secondary { background-color: var(--bg-surface); color: var(--primary-color); border: 1px solid var(--border-color); padding: 0.65rem 1.2rem; border-radius: var(--radius-sm); font-weight: 500; cursor: pointer; transition: all 0.2s; }
 .btn-secondary:hover { background-color: var(--bg-app); }
 .btn-text { background: none; border: none; color: var(--accent-color); font-size: 0.85rem; font-weight: 600; cursor: pointer; }
@@ -202,100 +154,4 @@ body { font-family: var(--font-family); background-color: var(--bg-app); color: 
     .form-actions { flex-direction: column-reverse; gap: 1rem; }
     .form-actions-right { width: 100%; display: grid; grid-template-columns: 1fr 1fr; }
     .info-grid { grid-template-columns: 1fr; gap: 0.5rem; }
-}
-/* ===== ULTRA PREMIUM OVERRIDE ===== */
-:root{
- --accent-secondary:#8B5CF6;
- --glass-bg:rgba(255,255,255,.78);
- --shadow-xl:0 20px 50px rgba(0,0,0,.12);
-}
-body{
- background:
- radial-gradient(circle at 0% 0%, rgba(59,130,246,.12), transparent 35%),
- radial-gradient(circle at 100% 0%, rgba(139,92,246,.10), transparent 35%),
- #f5f7fa;
-}
-.logo{
- background:linear-gradient(135deg,var(--accent-color),var(--accent-secondary));
- -webkit-background-clip:text;
- -webkit-text-fill-color:transparent;
-}
-.sidebar,.topbar{backdrop-filter:blur(16px);}
-.card,.task-card,.owner-card,.modal-content{
- border:none;
- box-shadow:var(--shadow-xl);
-}
-.task-card{
- position:relative;
- overflow:hidden;
-}
-.task-card::before{
- content:'';
- position:absolute;
- top:0;left:0;width:100%;height:4px;
- background:linear-gradient(90deg,var(--accent-color),var(--accent-secondary));
-}
-.btn-primary {
-    background: #2563EB !important; 
-    color: #FFFFFF !important;
-    border: none !important;
-    padding: 0.65rem 1.2rem !important; /* Ripristina e forza la spaziatura interna */
-    border-radius: 8px !important; /* Bordo leggermente arrotondato moderno */
-    font-size: 0.95rem !important;
-    font-weight: 600 !important;
-    cursor: pointer;
-    display: inline-flex !important; /* Allinea perfettamente testo ed eventuali icone */
-    align-items: center;
-    justify-content: center;
-    gap: 0.5rem;
-    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3) !important;
-    transition: all 0.2s ease !important;
-    line-height: 1.2;
-    white-space: nowrap; /* Evita che il testo vada a capo deformando il tasto */
-}
-
-.btn-primary:hover {
-    background: #1D4ED8 !important; 
-    transform: translateY(-2px) !important;
-    box-shadow: 0 8px 20px rgba(37, 99, 235, 0.45) !important;
-}
-.room-table tbody tr:hover{background:rgba(37,99,235,.05);}
-.status-indicator.done{box-shadow:0 0 12px rgba(16,185,129,.7);}
-.status-indicator.pending{box-shadow:0 0 12px rgba(245,158,11,.7);}
-/* =========================================
-   POPUP MENU UTENTE (In alto a destra)
-========================================= */
-#userMenu {
-    background-color: #2563EB !important;
-    border-radius: var(--radius-lg);
-    box-shadow: 0 15px 35px -5px rgba(37, 99, 235, 0.4);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    overflow: hidden;
-    padding: 0.5rem;
-    z-index: 9999;
-}
-
-/* Stile per i link e i bottoni (es. Logout) dentro il menu utente */
-#userMenu a,
-#userMenu button {
-    color: #FFFFFF !important;
-    background: transparent;
-    border: none;
-    width: 100%;
-    text-align: left;
-    padding: 0.75rem 1rem;
-    font-size: 0.95rem;
-    font-weight: 600;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: background-color 0.2s ease;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-
-/* Effetto hover sugli elementi del menu utente */
-#userMenu a:hover,
-#userMenu button:hover {
-    background-color: rgba(255, 255, 255, 0.15) !important; /* Sfondo semi-trasparente bianco */
 }
