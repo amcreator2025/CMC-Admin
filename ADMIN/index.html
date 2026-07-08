@@ -98,11 +98,28 @@
                 <span class="avatar" id="userAvatar">👤</span>
               </button>
               
-              <div class="logo-menu" id="userMenu" style="display: none; position: absolute; right: 0; top: 100%; background: #1e293b; color: white; padding: 10px; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); z-index: 1020; min-width: 160px; margin-top: 8px;">
+              <div class="logo-menu" id="userMenu" style="display: none; position: absolute; right: 0; top: 100%; background: #1e293b; color: white; padding: 10px; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); z-index: 1020; min-width: 200px; margin-top: 8px;">
                 <div class="logo-menu__item" style="cursor:default; opacity:0.7; border-bottom:1px solid rgba(255,255,255,0.1); margin-bottom:5px; padding: 4px 8px;">
-                   <small id="userNameDisplay">Utente</small>
+                   <small id="userNameDisplay">Amministrazione</small>
                 </div>
-                <button class="logo-menu__item" id="btnLogout" style="width: 100%; text-align: left; background: transparent; border: none; color:#ef4444; margin-top:5px; padding: 6px 8px; cursor: pointer; font-weight: 600; font-size: 0.85rem;">🚪 Logout</button>
+                
+                <button class="logo-menu__item" onclick="changeView('profile'); document.getElementById('userMenu').style.display='none';" style="width: 100%; text-align: left; background: transparent; border: none; color: white; padding: 8px; cursor: pointer; font-weight: 600; font-size: 0.85rem; border-radius: 6px; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='transparent'">
+                    👤 Il Mio Profilo
+                </button>
+
+                <button class="logo-menu__item" onclick="changeView('staff'); document.getElementById('userMenu').style.display='none';" style="width: 100%; text-align: left; background: transparent; border: none; color: white; padding: 8px; cursor: pointer; font-weight: 600; font-size: 0.85rem; border-radius: 6px; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='transparent'">
+                    👥 Gestione Staff
+                </button>
+
+                <button class="logo-menu__item" onclick="changeView('settings'); document.getElementById('userMenu').style.display='none';" style="width: 100%; text-align: left; background: transparent; border: none; color: white; padding: 8px; cursor: pointer; font-weight: 600; font-size: 0.85rem; border-radius: 6px; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='transparent'">
+                    ⚙️ Configurazioni
+                </button>
+                
+                <div style="height: 1px; background: rgba(255,255,255,0.1); margin: 5px 0;"></div>
+                
+                <button class="logo-menu__item" id="btnLogout" style="width: 100%; text-align: left; background: transparent; border: none; color:#ef4444; padding: 8px; cursor: pointer; font-weight: 600; font-size: 0.85rem; border-radius: 6px; transition: background 0.2s;" onmouseover="this.style.background='rgba(239,68,68,0.1)'" onmouseout="this.style.background='transparent'">
+                    🚪 Logout
+                </button>
               </div>
             </div>
         </div>
@@ -115,10 +132,9 @@
                 <li><a href="#" class="active" data-view="dashboard">Dashboard Admin</a></li>
                 <li><a href="#" data-view="tasks">Task e Planning</a></li>
                 <li><a href="#" data-view="rooms">Strutture e Proprietari</a></li>
-                <li><a href="#" data-view="staff">Gestione Staff</a></li>
-                <li><a href="#" data-view="settings">Impostazioni</a></li>
-                <li><a href="#" data-view="billing">Report e Fatture</a></li>
-                <li><a href="#" data-view="subscription">Abbonamento</a></li>
+                <li><a href="#" data-view="reports">Statistiche e Flussi</a></li>
+                <li><a href="#" data-view="billing">Fatturazione</a></li>
+                <li><a href="#" data-view="magazzino">Magazzino</a></li>
             </ul>
 
             <div style="position: absolute; bottom: calc(var(--spacing-md) + 60px); left: var(--spacing-md); width: calc(100% - (var(--spacing-md) * 2)); box-sizing: border-box; z-index: 10;">

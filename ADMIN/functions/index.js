@@ -25,7 +25,8 @@ const AppState = {
     tasksViewMode: 'grid',
     tasksTimeFrame: 'day', 
     selectedTaskDate: new Date().toISOString().split('T')[0],
-    selectedBillingMonth: new Date().toISOString().slice(0, 7) // Serve per il modulo reportistica
+    selectedBillingMonth: new Date().toISOString().slice(0, 7),
+    selectedReportMonth: new Date().toISOString().slice(0, 7) // <--- NUOVA RIGA
 };
 
 // Variabile globale per mantenere in memoria il catalogo
@@ -343,6 +344,542 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
             }
             break;
 
+      
+       case 'reports': {
+            if (pageTitle) pageTitle.textContent = 'Dashboard Direzionale (Business Intelligence)';
+            viewContainer.innerHTML = `<div style="display: flex; justify-content: center; padding: 3rem;"><div class="spinner" style="width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #3b82f6; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>`;
+
+            // 1. INIZIALIZZAZIONE VARIABILI GLOBALI DEI FILTRI
+            if (typeof window.reportFilterOwner === 'undefined') window.reportFilterOwner = 'all';
+            
+            if (!window.reportDateFrom || !window.reportDateTo) {
+                window.reportPreset = 'this_month';
+                const now = new Date();
+                const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+                const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+                window.reportDateFrom = firstDay.toISOString().split('T')[0];
+                window.reportDateTo = lastDay.toISOString().split('T')[0];
+            }
+
+            // Funzione per i preset temporali (Ispirata al tuo analytics.js)
+            window.applicaPresetReport = function(preset) {
+                window.reportPreset = preset;
+                const now = new Date();
+                
+                if (preset === 'today') {
+                    window.reportDateFrom = now.toISOString().split('T')[0];
+                    window.reportDateTo = now.toISOString().split('T')[0];
+                } else if (preset === '7_days') {
+                    const from = new Date(now);
+                    from.setDate(now.getDate() - 6);
+                    window.reportDateFrom = from.toISOString().split('T')[0];
+                    window.reportDateTo = now.toISOString().split('T')[0];
+                } else if (preset === 'this_month') {
+                    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+                    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+                    window.reportDateFrom = firstDay.toISOString().split('T')[0];
+                    window.reportDateTo = lastDay.toISOString().split('T')[0];
+                } else if (preset === 'last_month') {
+                    const firstDay = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                    const lastDay = new Date(now.getFullYear(), now.getMonth(), 0);
+                    window.reportDateFrom = firstDay.toISOString().split('T')[0];
+                    window.reportDateTo = lastDay.toISOString().split('T')[0];
+                }
+                changeView('reports'); 
+            };
+
+            window.applicaDateCustomReport = function() {
+                const from = document.getElementById('report-from-date').value;
+                const to = document.getElementById('report-to-date').value;
+                if (from && to) {
+                    window.reportDateFrom = from;
+                    window.reportDateTo = to;
+                    window.reportPreset = 'custom';
+                    changeView('reports');
+                }
+            };
+
+            window.aggiornaFiltroSocietaReport = function(valore) {
+                window.reportFilterOwner = valore;
+                changeView('reports'); 
+            };
+
+            try {
+                // 2. RECUPERO MASSIVO DEI DATI (Filtrato per data)
+                const { data: owners } = await supabase.from('owners').select('*, rooms(*, room_task_pricing(*))').order('business_name');
+                const { data: allTasks } = await supabase.from('tasks').select('*, rooms(*), operators(*), task_kit_usage(*, laundry_kits(*))')
+                    .eq('status', 'done')
+                    .gte('task_date', window.reportDateFrom)
+                    .lte('task_date', window.reportDateTo);
+                const { data: operators } = await supabase.from('operators').select('*').order('first_name');
+                const { data: allBookings } = await supabase.from('bookings').select('*')
+                    .gte('check_out_date', window.reportDateFrom)
+                    .lte('check_out_date', window.reportDateTo);
+
+                // --- APPLICAZIONE FILTRO SOCIETÀ ---
+                let filteredTasks = allTasks || [];
+                let filteredBookings = allBookings || [];
+                
+                if (window.reportFilterOwner !== 'all') {
+                    const selectedOwner = owners.find(o => o.id === window.reportFilterOwner);
+                    const ownerRoomIds = selectedOwner ? selectedOwner.rooms.map(r => r.id) : [];
+                    filteredTasks = filteredTasks.filter(t => ownerRoomIds.includes(t.room_id));
+                    filteredBookings = filteredBookings.filter(b => ownerRoomIds.includes(b.room_id));
+                }
+
+                let fatturatoLordo = 0;
+                let costiPersonale = 0;
+                let totalePulizieEffettuate = 0;
+                let totalePax = 0;
+                let operatorStats = {};
+
+                // --- CALCOLO COSTI FISSI ---
+                let warningCostiFissi = '';
+                if (window.reportFilterOwner === 'all' && (window.reportPreset === 'this_month' || window.reportPreset === 'last_month')) {
+                    operators?.forEach(op => {
+                        if (op.contract_type === 'fixed') {
+                            costiPersonale += parseFloat(op.contract_rate) || 0;
+                        }
+                    });
+                } else {
+                    warningCostiFissi = `<div style="margin-top: 0.5rem; font-size: 0.75rem; color: #f59e0b; background: #fef3c7; padding: 0.4rem; border-radius: 4px; border: 1px solid #fcd34d;">⚠️ Costi mensili fissi esclusi (viene conteggiato solo il lavoro a gettone).</div>`;
+                }
+
+                // 3. CALCOLO FATTURATO E COSTI VARIABILI
+                filteredTasks?.forEach(task => {
+                    totalePulizieEffettuate++;
+                    
+                    const taskOwner = owners?.find(o => o.rooms?.some(r => r.id === task.room_id));
+                    const room = task.rooms;
+
+                    // --- FATTURATO LORDO ---
+                    let ricavoTask = 0;
+                    if (taskOwner && room) {
+                        const rBillingMode = room.billing_mode || 'inherit';
+                        const finalBillingMode = (rBillingMode === 'inherit') ? (taskOwner.default_billing_mode || 'task') : rBillingMode;
+
+                        if (finalBillingMode === 'pax') {
+                            const matchingBooking = filteredBookings?.find(b => b.room_id === task.room_id && b.check_out_date === task.task_date);
+                            const paxCount = matchingBooking ? matchingBooking.pax : 0;
+                            if (paxCount > 0) {
+                                const paxPrice = (rBillingMode === 'pax') ? (room.custom_pax_price || 0) : (taskOwner.default_pax_price || 0);
+                                ricavoTask = paxCount * parseFloat(paxPrice);
+                            } else {
+                                const matchingPrice = room.room_task_pricing?.find(p => p.task_type_name === task.task_type);
+                                if (matchingPrice) ricavoTask = parseFloat(matchingPrice.price) || 0;
+                            }
+                        } else {
+                            const matchingPrice = room.room_task_pricing?.find(p => p.task_type_name === task.task_type);
+                            if (matchingPrice) ricavoTask = parseFloat(matchingPrice.price) || 0;
+                        }
+                    }
+
+                    let ricavoKit = 0;
+                    task.task_kit_usage?.forEach(usage => {
+                        ricavoKit += usage.quantity * (usage.laundry_kits?.price_per_unit || 0);
+                    });
+
+                    fatturatoLordo += (ricavoTask + ricavoKit);
+
+                    // --- POPOLA LEADERBOARD OPERATORI E COSTI A GETTONE ---
+                    const op = task.operators;
+                    if (op) {
+                        if (!operatorStats[op.id]) {
+                            operatorStats[op.id] = { name: `${op.first_name} ${op.last_name || ''}`.trim(), tasks: 0, earnings: 0 };
+                        }
+                        operatorStats[op.id].tasks++;
+
+                        if (op.contract_type === 'task') {
+                            const rate = parseFloat(op.contract_rate) || 0;
+                            costiPersonale += rate;
+                            operatorStats[op.id].earnings += rate;
+                        }
+                    }
+                });
+
+                filteredBookings?.forEach(b => totalePax += (parseInt(b.pax) || 0));
+                const margineNetto = fatturatoLordo - costiPersonale;
+
+                // --- GENERAZIONE HTML PILLOLE ---
+                const pillOwnersHtml = `
+                    <button class="filter-pill ${window.reportFilterOwner === 'all' ? 'active' : ''}" onclick="window.aggiornaFiltroSocietaReport('all')">🌐 Tutte</button>
+                    ${owners.map(o => `<button class="filter-pill ${window.reportFilterOwner === o.id ? 'active' : ''}" onclick="window.aggiornaFiltroSocietaReport('${o.id}')"> ${o.business_name}</button>`).join('')}
+                `;
+
+                const leaderboard = Object.values(operatorStats).sort((a, b) => b.tasks - a.tasks);
+                let leaderboardHtml = leaderboard.map((op, index) => `
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid #f1f5f9; transition: background 0.2s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <div style="width: 36px; height: 36px; border-radius: 50%; background: ${index === 0 ? '#fef3c7' : '#e0e7ff'}; color: ${index === 0 ? '#d97706' : '#4f46e5'}; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.2rem;">
+                                ${index === 0 ? '👑' : op.name.charAt(0).toUpperCase()}
+                            </div>
+                            <span style="font-weight: 600; color: #0f172a;">${op.name}</span>
+                        </div>
+                        <div style="text-align: right;">
+                            <span style="display: block; font-weight: 800; color: #3b82f6;">${op.tasks} Task</span>
+                            <span style="font-size: 0.75rem; color: #64748b;">Generati: €${op.earnings.toFixed(2)}</span>
+                        </div>
+                    </div>
+                `).join('') || '<p style="padding: 1.5rem; text-align: center; color: #64748b; font-style: italic;">Nessun task completato in questo periodo.</p>';
+
+                // Formattazione per la UI
+                const dateFromFmt = new Date(window.reportDateFrom).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: '2-digit' });
+                const dateToFmt = new Date(window.reportDateTo).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: '2-digit' });
+
+                viewContainer.innerHTML = `
+                    <style>
+                        .filters-box-premium {
+                            background: #ffffff; border: 1px solid #e2e8f0;
+                            border-radius: 16px; padding: 1.5rem; margin-bottom: 2rem; 
+                            display: flex; flex-direction: column; gap: 1.25rem;
+                            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02);
+                        }
+                        .filter-label-premium {
+                            font-size: 0.75rem; color: #64748b; text-transform: uppercase;
+                            letter-spacing: 0.05em; font-weight: 800; margin-bottom: 8px; display: block;
+                        }
+                        .pill-group-premium { display: flex; flex-wrap: wrap; gap: 8px; }
+                        .filter-pill {
+                            background: #f8fafc; border: 1px solid #e2e8f0;
+                            color: #475569; padding: 8px 16px; border-radius: 20px;
+                            cursor: pointer; font-size: 0.85rem; font-weight: 600; transition: all 0.2s;
+                        }
+                        .filter-pill:hover { background: #f1f5f9; color: #0f172a; border-color: #cbd5e1; }
+                        .filter-pill.active {
+                            background: #3b82f6; color: #ffffff; border-color: #3b82f6;
+                            box-shadow: 0 4px 10px rgba(59, 130, 246, 0.25);
+                        }
+                        .custom-date-container {
+                            display: flex; gap: 10px; align-items: center; flex-wrap: wrap; 
+                            margin-top: 10px; padding: 10px; background: #f8fafc; border-radius: 8px; border: 1px dashed #cbd5e1;
+                        }
+                    </style>
+
+                    <div class="registry-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem;">
+                        <div>
+                            <h2 style="margin:0; font-size:1.25rem;">Dashboard Direzionale (BI)</h2>
+                            <p style="margin:0; font-size:0.85rem; color:#64748b;">Analisi di redditività, costi e volumi operativi.</p>
+                        </div>
+                    </div>
+
+                    <!-- BOX FILTRI PREMIUM -->
+                    <div class="filters-box-premium">
+                        <div>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span class="filter-label-premium">Periodo di Analisi: <span style="color: #3b82f6; margin-left: 5px;">${dateFromFmt} - ${dateToFmt}</span></span>
+                            </div>
+                            <div class="pill-group-premium">
+                                <button class="filter-pill ${window.reportPreset === 'today' ? 'active' : ''}" onclick="window.applicaPresetReport('today')">Oggi</button>
+                                <button class="filter-pill ${window.reportPreset === '7_days' ? 'active' : ''}" onclick="window.applicaPresetReport('7_days')">7 Giorni</button>
+                                <button class="filter-pill ${window.reportPreset === 'this_month' ? 'active' : ''}" onclick="window.applicaPresetReport('this_month')">Questo Mese</button>
+                                <button class="filter-pill ${window.reportPreset === 'last_month' ? 'active' : ''}" onclick="window.applicaPresetReport('last_month')">Mese Scorso</button>
+                                <button class="filter-pill ${window.reportPreset === 'custom' ? 'active' : ''}" onclick="window.applicaPresetReport('custom')">📅 Custom</button>
+                            </div>
+                            
+                            <!-- RIGA DATE CUSTOM -->
+                            <div id="custom-date-row" class="custom-date-container" style="display: ${window.reportPreset === 'custom' ? 'flex' : 'none'};">
+                                <input type="date" id="report-from-date" class="form-control" value="${window.reportDateFrom}" style="padding: 0.4rem; border-radius: 6px; border: 1px solid #cbd5e1; outline: none;">
+                                <span style="color:#64748b;">al</span>
+                                <input type="date" id="report-to-date" class="form-control" value="${window.reportDateTo}" style="padding: 0.4rem; border-radius: 6px; border: 1px solid #cbd5e1; outline: none;">
+                                <button class="btn-primary" onclick="window.applicaDateCustomReport()" style="padding: 0.4rem 1rem; border-radius: 6px; border: none; background: #3b82f6; font-weight: 600;">Applica Date</button>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <span class="filter-label-premium">Società (Cliente)</span>
+                            <div class="pill-group-premium">
+                                ${pillOwnersHtml}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- KPI FINANZIARI GLOBALI -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.25rem; margin-bottom: 2rem;">
+                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-top: 4px solid #3b82f6;">
+                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Fatturato Lordo (Ricavi)</span>
+                            <h3 style="margin: 0.5rem 0 0 0; font-size: 2rem; font-weight: 800; color: #0f172a;">€ ${fatturatoLordo.toFixed(2)}</h3>
+                        </div>
+                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-top: 4px solid #ef4444;">
+                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Costi Personale (Uscite)</span>
+                            <h3 style="margin: 0.5rem 0 0 0; font-size: 2rem; font-weight: 800; color: #ef4444;">- € ${costiPersonale.toFixed(2)}</h3>
+                            <small style="color: #94a3b8; font-size: 0.75rem;">Variabili in base ai task eseguiti</small>
+                            ${warningCostiFissi}
+                        </div>
+                        <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); border-radius: 12px; padding: 1.5rem; color: white; box-shadow: 0 10px 15px -3px rgba(16, 185, 129, 0.3);">
+                            <span style="font-size: 0.85rem; font-weight: 700; text-transform: uppercase; opacity: 0.9;">Margine Operativo</span>
+                            <h3 style="margin: 0.5rem 0 0 0; font-size: 2rem; font-weight: 800;">€ ${margineNetto.toFixed(2)}</h3>
+                            <small style="font-size: 0.75rem; opacity: 0.8;">Fatturato - Costi Personale</small>
+                        </div>
+                    </div>
+
+                    <!-- GRIGLIA INFERIORE: OPERATORI E FLUSSI -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 1.5rem;">
+                        
+                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); overflow: hidden;">
+                            <div style="padding: 1.25rem; border-bottom: 1px solid #f1f5f9; background: #f8fafc;">
+                                <h3 style="margin: 0; font-size: 1.1rem; color: #0f172a;">🏆 Produttività Staff</h3>
+                            </div>
+                            <div style="max-height: 350px; overflow-y: auto;">
+                                ${leaderboardHtml}
+                            </div>
+                        </div>
+
+                        <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+                            <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02);">
+                                <div>
+                                    <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase; display: block; margin-bottom: 0.25rem;">Volume Ospiti nel periodo</span>
+                                    <h3 style="margin: 0; font-size: 2rem; font-weight: 800; color: #0f172a;">${totalePax} <span style="font-size: 1rem; color: #94a3b8; font-weight: 600;">Pax transitati</span></h3>
+                                </div>
+                                <div style="font-size: 3rem; opacity: 0.1;">👥</div>
+                            </div>
+
+                            <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02);">
+                                <div>
+                                    <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase; display: block; margin-bottom: 0.25rem;">Interventi nel periodo</span>
+                                    <h3 style="margin: 0; font-size: 2rem; font-weight: 800; color: #3b82f6;">${totalePulizieEffettuate} <span style="font-size: 1rem; color: #94a3b8; font-weight: 600;">pulizie completate</span></h3>
+                                </div>
+                                <div style="font-size: 3rem; opacity: 0.1;">🧹</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+            } catch (err) {
+                console.error(err);
+                viewContainer.innerHTML = `<p style="color: #ef4444; text-align: center; padding: 2rem;">Errore caricamento report BI: ${err.message}</p>`;
+            }
+            break;
+        }
+
+       case 'magazzino': {
+            if (pageTitle) pageTitle.textContent = 'Digital Twin Magazzino';
+            
+            // Creiamo un'ambientazione immersiva azzerando il padding standard
+            viewContainer.style.padding = '0';
+            viewContainer.innerHTML = `<div style="display: flex; justify-content: center; align-items:center; height: 400px;"><div class="spinner" style="width: 40px; height: 40px; border: 4px solid rgba(255,255,255,0.1); border-top: 4px solid #3b82f6; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>`;
+
+            // Recuperiamo i dati
+            const { data: items } = await supabase.from('catalog_items').select('*').order('name');
+            const { data: movements } = await supabase.from('inventory_movements').select('*, catalog_items(name), rooms(name)').order('created_at', { ascending: false }).limit(8);
+
+            let articoliSottoscorta = 0;
+            let valoreTotale = 0;
+            
+            // LOGICA SCELTA 1: Raggruppamento dinamico per Categoria
+            const shelves = items.reduce((acc, item) => {
+                const cat = item.category || 'Altro / Non Assegnato';
+                if (!acc[cat]) acc[cat] = [];
+                acc[cat].push(item);
+                return acc;
+            }, {});
+
+            // Generiamo l'HTML scorrendo le categorie create
+            let shelvesHtml = Object.keys(shelves).sort().map(categoryName => {
+                const shelfItems = shelves[categoryName];
+                
+                const shelfItemsHtml = shelfItems.map(item => {
+                    const minStock = item.min_stock || 10;
+                    const stockPulito = item.stock_pulito || 0;
+                    const stockSporco = item.stock_sporco || 0;
+                    const isLow = stockPulito <= minStock;
+                    const isEmpty = stockPulito === 0;
+                    
+                    if (isLow) articoliSottoscorta++;
+                    valoreTotale += (stockPulito * (item.price_per_unit || 0));
+
+                    // Colori LED per il Digital Twin (basato sul pulito, che è la giacenza "utile")
+                    const ledColor = isEmpty ? '#ef4444' : (isLow ? '#f59e0b' : '#10b981');
+                    const ledShadow = isEmpty ? '0 0 15px #ef4444' : (isLow ? '0 0 10px #f59e0b' : '0 0 10px #10b981');
+                    const ledAnimation = isEmpty ? 'pulse-red 2s infinite' : 'none';
+
+                    return `
+                        <div class="item-cube" style="position: relative; background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; padding: 1.25rem; display: flex; flex-direction: column; justify-content: space-between; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); overflow: hidden; backdrop-filter: blur(10px);">
+                            
+                            <!-- LED di stato -->
+                            <div style="position: absolute; top: 1rem; right: 1rem; width: 8px; height: 8px; border-radius: 50%; background: ${ledColor}; box-shadow: ${ledShadow}; animation: ${ledAnimation};"></div>
+                            
+                            <div style="z-index: 1;">
+                                <h4 style="margin: 0; font-size: 1rem; color: #f8fafc; font-weight: 700; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; padding-right: 15px;">${item.name}</h4>
+                                <p style="margin: 0.25rem 0 0 0; font-size: 0.75rem; color: #94a3b8; font-family: monospace;">ID: ${item.id.substring(0,6).toUpperCase()}</p>
+                            </div>
+
+                            <div style="display: flex; align-items: flex-end; justify-content: space-between; margin-top: 1.25rem; z-index: 1; gap: 0.5rem;">
+                                <div style="display: flex; gap: 1rem;">
+                                    <div>
+                                        <span style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; letter-spacing: 1px; display: block; margin-bottom: 2px;">✨ Pulito</span>
+                                        <span style="font-size: 2rem; font-weight: 800; color: ${isEmpty ? '#ef4444' : '#f8fafc'}; line-height: 1; text-shadow: 0 4px 10px rgba(0,0,0,0.5);">${stockPulito}</span>
+                                    </div>
+                                    <div>
+                                        <span style="font-size: 0.65rem; color: #64748b; text-transform: uppercase; letter-spacing: 1px; display: block; margin-bottom: 2px;">🧺 Sporco</span>
+                                        <span style="font-size: 2rem; font-weight: 800; color: ${stockSporco > 0 ? '#f59e0b' : '#475569'}; line-height: 1;">${stockSporco}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="action-dock" style="display: flex; gap: 0.5rem; margin-top: 1rem; z-index: 1;">
+                                <button onclick="apriModaleMovimento('${item.id}', 'IN_PULITO', '${item.name.replace(/'/g, "\\'")}')" class="twin-btn in-btn" title="Carica pulito (fornitore/lavanderia)">+</button>
+                                <button onclick="apriModaleMovimento('${item.id}', 'OUT_PULITO', '${item.name.replace(/'/g, "\\'")}')" class="twin-btn out-btn" title="Consegna pulito a una struttura">-</button>
+                                <button onclick="apriModaleMovimento('${item.id}', 'OUT_SPORCO', '${item.name.replace(/'/g, "\\'")}')" class="twin-btn laundry-btn" title="Invia sporco in lavanderia" ${stockSporco === 0 ? 'disabled' : ''}>🧺</button>
+                            </div>
+
+                            <!-- Riflesso vetro interno -->
+                            <div style="position: absolute; top: 0; left: 0; width: 100%; height: 50%; background: linear-gradient(180deg, rgba(255,255,255,0.03) 0%, transparent 100%); pointer-events: none;"></div>
+                        </div>
+                    `;
+                }).join('');
+
+                return `
+                    <div class="shelf-row" style="margin-bottom: 2.5rem;">
+                        <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.25rem;">
+                            <div style="height: 1px; flex: 1; background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.4));"></div>
+                            <span style="font-size: 0.9rem; font-weight: 800; color: #60a5fa; text-transform: uppercase; letter-spacing: 2px;">🏷️ ${categoryName}</span>
+                            <div style="height: 1px; flex: 1; background: linear-gradient(270deg, transparent, rgba(59, 130, 246, 0.4));"></div>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1.5rem; padding: 0 1rem;">
+                            ${shelfItemsHtml}
+                        </div>
+                        <!-- Base dello scaffale (effetto 3D) -->
+                        <div style="height: 6px; background: linear-gradient(90deg, #0f172a, #1e293b, #0f172a); margin-top: 1.5rem; border-radius: 999px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5);"></div>
+                    </div>
+                `;
+            }).join('');
+
+            viewContainer.innerHTML = `
+                <style>
+                    @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); } 70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } }
+                    
+                    .warehouse-environment {
+                        background: radial-gradient(circle at 50% 0%, #1e293b 0%, #020617 100%);
+                        min-height: calc(100vh - 70px);
+                        border-radius: 20px;
+                        margin: 1rem;
+                        padding: 2.5rem;
+                        color: white;
+                        box-shadow: inset 0 0 100px rgba(0,0,0,0.5);
+                        overflow: hidden;
+                        position: relative;
+                    }
+                    
+                    .warehouse-environment::before {
+                        content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+                        background-image: linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+                        background-size: 40px 40px; pointer-events: none; z-index: 0;
+                    }
+
+                    .item-cube:hover { transform: translateY(-5px); border-color: rgba(59, 130, 246, 0.4); box-shadow: 0 15px 30px rgba(0,0,0,0.4), 0 0 20px rgba(59,130,246,0.1); }
+                    .item-cube:hover .action-dock { opacity: 1; transform: translateY(0); }
+
+                    .twin-btn {
+                        width: 40px; height: 40px; border-radius: 10px; border: none; font-size: 1.5rem; font-weight: 300;
+                        display: flex; justify-content: center; align-items: center; cursor: pointer; transition: all 0.2s; backdrop-filter: blur(5px);
+                    }
+                    .in-btn { background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
+                    .in-btn:hover { background: #10b981; color: white; box-shadow: 0 0 15px rgba(16,185,129,0.4); }
+                    
+                    .out-btn { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
+                    .out-btn:hover { background: #ef4444; color: white; box-shadow: 0 0 15px rgba(239,68,68,0.4); }
+
+                    .laundry-btn { background: rgba(245, 158, 11, 0.2); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 1.1rem; }
+                    .laundry-btn:hover:not(:disabled) { background: #f59e0b; color: white; box-shadow: 0 0 15px rgba(245,158,11,0.4); }
+                    .laundry-btn:disabled { opacity: 0.25; cursor: not-allowed; }
+
+                    .kpi-glass {
+                        background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05);
+                        backdrop-filter: blur(10px); border-radius: 16px; padding: 1.5rem;
+                        display: flex; flex-direction: column; justify-content: center;
+                    }
+                    
+                    .movement-ticker { display: flex; flex-direction: column; gap: 0.8rem; height: 100%; max-height: 400px; overflow-y: auto; padding-right: 0.5rem; }
+                    .movement-ticker::-webkit-scrollbar { width: 4px; }
+                    .movement-ticker::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+                </style>
+
+                <div class="warehouse-environment">
+                    <!-- HEADER CONTROL ROOM -->
+                    <div style="position: relative; z-index: 10; display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 3rem; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem;">
+                                <div style="width: 12px; height: 12px; border-radius: 50%; background: #10b981; box-shadow: 0 0 10px #10b981;"></div>
+                                <span style="color: #10b981; font-family: monospace; font-size: 0.85rem; letter-spacing: 2px;">LIVE MONITORING</span>
+                            </div>
+                            <h2 style="margin: 0; font-size: 2.5rem; font-weight: 800; letter-spacing: -1px; text-shadow: 0 2px 10px rgba(0,0,0,0.5);">Centrale Operativa</h2>
+                        </div>
+                        
+                        <!-- BARRA DI RICERCA GLASSMORPHISM -->
+                        <div style="flex: 1; min-width: 250px; max-width: 400px; margin: 0 1rem;">
+                            <div style="position: relative;">
+                                <input type="text" id="magazzino-search" placeholder="Cerca articolo (es. Lenzuolo, Detergente...)" oninput="filtraMagazzino(this.value)" style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: white; padding: 0.85rem 1rem 0.85rem 2.8rem; border-radius: 999px; outline: none; font-family: inherit; font-size: 0.95rem; backdrop-filter: blur(5px); transition: border-color 0.2s;" onfocus="this.style.borderColor='rgba(59, 130, 246, 0.5)'" onblur="this.style.borderColor='rgba(255,255,255,0.1)'">
+                                <span style="position: absolute; left: 16px; top: 50%; transform: translateY(-50%); font-size: 1.1rem; opacity: 0.5;">🔍</span>
+                            </div>
+                        </div>
+
+                        <div style="display: flex; gap: 1.5rem;">
+                            <div class="kpi-glass">
+                                <span style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;">Valore Magazzino</span>
+                                <span style="font-size: 1.5rem; font-weight: 700; color: #f8fafc; font-family: monospace;">€ ${valoreTotale.toFixed(2)}</span>
+                            </div>
+                            <div class="kpi-glass" style="${articoliSottoscorta > 0 ? 'border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.05);' : ''}">
+                                <span style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;">Alert Sottoscorta</span>
+                                <span style="font-size: 1.5rem; font-weight: 700; color: ${articoliSottoscorta > 0 ? '#ef4444' : '#10b981'}; font-family: monospace;">${articoliSottoscorta} UNITÀ</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="position: relative; z-index: 10; display: grid; grid-template-columns: 3fr 1fr; gap: 3rem;">
+                        
+                        <!-- ZONA SCAFFALATURE (DIGITAL TWIN) -->
+                        <div class="shelves-area">
+                            ${shelvesHtml}
+                        </div>
+
+                        <!-- ZONA LOG OPERAZIONI -->
+                        <div class="log-area" style="background: rgba(0,0,0,0.2); border-radius: 16px; border: 1px solid rgba(255,255,255,0.05); padding: 1.5rem; height: fit-content; position: sticky; top: 20px;">
+                            <h3 style="margin: 0 0 1.5rem 0; font-size: 1rem; color: #cbd5e1; display: flex; align-items: center; gap: 0.5rem; text-transform: uppercase; letter-spacing: 1px;">
+                                📡 Log Movimenti
+                            </h3>
+                            <div class="movement-ticker">
+                                ${movements.map(m => {
+                                    const labels = {
+                                        IN_PULITO:  { text: 'CARICO PULITO',      color: '#10b981' },
+                                        OUT_PULITO: { text: 'CONSEGNA PULITO',    color: '#ef4444' },
+                                        IN_SPORCO:  { text: 'RITIRO SPORCO',      color: '#f59e0b' },
+                                        OUT_SPORCO: { text: 'INVIO LAVANDERIA',   color: '#f59e0b' },
+                                    };
+                                    const info = labels[m.movement_type] || { text: m.movement_type, color: '#64748b' };
+                                    const isPositive = m.quantity > 0;
+                                    const fromTask = m.source === 'task_operatore';
+                                    return `
+                                        <div style="background: rgba(255,255,255,0.02); border-left: 3px solid ${info.color}; padding: 0.75rem; border-radius: 0 8px 8px 0;">
+                                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+                                                <span style="font-weight: 700; font-size: 0.85rem; color: #f8fafc;">${info.text}</span>
+                                                <span style="font-size: 0.7rem; color: #64748b; font-family: monospace;">${new Date(m.created_at).toLocaleTimeString('it-IT', {hour:'2-digit', minute:'2-digit'})}</span>
+                                            </div>
+                                            <div style="font-size: 0.8rem; color: #cbd5e1;">
+                                                ${isPositive ? '+' : ''}${m.quantity} pz <span style="color:#3b82f6;">${m.catalog_items?.name}</span>
+                                            </div>
+                                            ${m.rooms?.name ? `<div style="font-size: 0.7rem; color: #94a3b8; margin-top: 0.25rem;">Destinazione: ${m.rooms.name}</div>` : ''}
+                                            ${fromTask ? `<div style="font-size: 0.7rem; color: #60a5fa; margin-top: 0.25rem;">🤖 Automatico da chiusura task</div>` : ''}
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            `;
+            
+            // Ripristiniamo il padding quando si esce da questa vista
+            const oldChangeView = window.changeView;
+            window.changeView = async function(viewName, param1 = null, param2 = null) {
+                if (viewName !== 'magazzino') {
+                    viewContainer.style.padding = '';
+                }
+                oldChangeView(viewName, param1, param2);
+            };
+            break;
+        }
+
        case 'tasks':
             if (pageTitle) pageTitle.textContent = 'Gestione Task e Planning';
             viewContainer.innerHTML = `<p style="color: var(--text-muted);">Sincronizzazione assegnazioni...</p>`;
@@ -657,13 +1194,34 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                         const lucchettoDisplay = room.lockbox_code ? `<code style="background: #f1f5f9; padding: 2px 6px; border-radius: 4px;">${room.lockbox_code}</code>` : `${iconaChiave} <span style="font-size:0.75rem; color:#64748b;">Fisica</span>`;
                         const safeRoomName = (room.name || '').replace(/'/g, "\\'");
 
+                        // === NUOVA LOGICA COLONNA PREZZI B2B ===
                         let prezziB2BHtml = '<div style="font-size:0.75rem; color:#64748b; line-height:1.4;">';
-                        if (room.room_task_pricing && room.room_task_pricing.length > 0) {
-                            prezziB2BHtml += room.room_task_pricing.map(p => {
-                                return `${p.task_type_name}: <b style="color:#0f172a">€${parseFloat(p.price).toFixed(2)}</b>`;
-                            }).join('<br>');
+                        
+                        const rBillingMode = room.billing_mode || 'inherit';
+                        const effectiveMode = rBillingMode === 'inherit' ? (owner.default_billing_mode || 'task') : rBillingMode;
+                        
+                        // Badge che indica da dove arriva la regola
+                        const originBadge = rBillingMode === 'inherit' 
+                           
+                        
+                        prezziB2BHtml += originBadge + '<br>';
+
+                        if (effectiveMode === 'pax') {
+                            // MOSTRA LA TARIFFA A PERSONA
+                            const effectivePaxPrice = rBillingMode === 'pax' ? (room.custom_pax_price || 0) : (owner.default_pax_price || 0);
+                            prezziB2BHtml += `<span style="color:#10b981; font-weight:800; font-size:0.8rem;">👤 A PERSONA </span><br>`;
+                            prezziB2BHtml += `Tariffa: <b style="color:#0f172a; font-size:0.85rem;">€${parseFloat(effectivePaxPrice).toFixed(2)}</b> / ospite<br>`;
+                            prezziB2BHtml += `<span style="font-size:0.65rem; color:#94a3b8; font-style:italic; margin-top:4px; display:inline-block;"></span>`;
                         } else {
-                            prezziB2BHtml += '<span style="color:#ef4444; font-style:italic;">Nessun listino</span>';
+                            // MOSTRA IL LISTINO STANDARD A INTERVENTO
+                            prezziB2BHtml += `<span style="color:#3b82f6; font-weight:800; font-size:0.8rem;">🧹 A INTERVENTO </span><br>`;
+                            if (room.room_task_pricing && room.room_task_pricing.length > 0) {
+                                prezziB2BHtml += room.room_task_pricing.map(p => {
+                                    return `${p.task_type_name}: <b style="color:#0f172a">€${parseFloat(p.price).toFixed(2)}</b>`;
+                                }).join('<br>');
+                            } else {
+                                prezziB2BHtml += '<span style="color:#ef4444; font-style:italic;">Nessun listino configurato</span>';
+                            }
                         }
                         prezziB2BHtml += '</div>';
 
@@ -726,7 +1284,7 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                                         <th style="padding: 0.6rem 1rem;">Struttura / Indirizzo</th>
                                         <th style="text-align: center; padding: 0.6rem 1rem;">Codice Porta</th>
                                         <th style="text-align: center; padding: 0.6rem 1rem;">Lucchetto Scorte</th>
-                                        <th style="text-align: left; padding: 0.6rem 1rem;">Prezzi B2B</th>
+                                        <th style="text-align: left; padding: 0.6rem 1rem;">Listino Prezzi</th>
                                         <th style="text-align: center; padding: 0.6rem 1rem;">Pax Mensili</th>
                                         <th style="text-align: center; padding: 0.6rem 1rem;">Check-in Pag.</th>
                                         <th style="text-align: right; padding: 0.6rem 1rem;">Azioni</th>
@@ -741,7 +1299,7 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
             viewContainer.innerHTML = htmlContent;
             break;
 
-      case 'staff':
+        case 'staff': {
             if (pageTitle) pageTitle.textContent = 'Gestione Staff (Operatori)';
             viewContainer.innerHTML = `<p style="color: #64748b;">Caricamento staff...</p>`;
             
@@ -764,11 +1322,11 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                         <table class="room-table" style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem;">
                             <thead>
                                 <tr style="background-color: #f8fafc; border-bottom: 2px solid #e2e8f0;">
-                                    <th style="padding: 1rem; color: #475569; font-weight: 600;">Nome e Cognome</th>
-                                    <th style="padding: 1rem; color: #475569; font-weight: 600;">Telefono</th>
-                                    <th style="padding: 1rem; color: #475569; font-weight: 600;">PIN Accesso App</th>
-                                    <th style="text-align: center; padding: 1rem; color: #475569; font-weight: 600;">Stato App</th>
-                                    <th style="text-align: right; padding: 1rem; color: #475569; font-weight: 600;">Azioni</th>
+                                    <th style="padding: 1.2rem 1rem; color: #475569; font-weight: 600;">Nome e Cognome</th>
+                                    <th style="padding: 1.2rem 1rem; color: #475569; font-weight: 600;">Telefono</th>
+                                    <th style="text-align: center; padding: 1.2rem 1rem; color: #475569; font-weight: 600;">PIN Accesso</th>
+                                    <th style="text-align: center; padding: 1.2rem 1rem; color: #475569; font-weight: 600;">Stato</th>
+                                    <th style="text-align: right; padding: 1.2rem 1rem; color: #475569; font-weight: 600;"></th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -780,23 +1338,29 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                 staffData.forEach((op, index) => {
                     const rowBg = index % 2 === 0 ? '#ffffff' : '#f8fafc';
                     const statusBadge = op.is_active 
-                        ? `<span class="badge" style="background-color: #d1fae5; color: #065f46; font-size: 0.75rem; padding: 0.25rem 0.6rem; border-radius: 9999px; font-weight: 600; border: 1px solid #a7f3d0;">ATTIVO</span>` 
-                        : `<span class="badge" style="background-color: #fee2e2; color: #991b1b; font-size: 0.75rem; padding: 0.25rem 0.6rem; border-radius: 9999px; font-weight: 600; border: 1px solid #fca5a5;">DISATTIVATO</span>`;
-                    
-                    const safeOpName = `${op.first_name} ${op.last_name || ''}`.replace(/'/g, "\\'");
+                        ? `<span class="badge" style="background-color: #d1fae5; color: #065f46; font-size: 0.75rem; padding: 0.3rem 0.8rem; border-radius: 9999px; font-weight: 600; border: 1px solid #a7f3d0;">ATTIVO</span>` 
+                        : `<span class="badge" style="background-color: #fee2e2; color: #991b1b; font-size: 0.75rem; padding: 0.3rem 0.8rem; border-radius: 9999px; font-weight: 600; border: 1px solid #fca5a5;">DISATTIVATO</span>`;
 
+                    // Intera riga cliccabile che apre la nuova modale
                     staffHtml += `
-                        <tr style="background-color: ${rowBg}; border-bottom: 1px solid #e2e8f0; transition: background-color 0.15s;" onmouseover="this.style.backgroundColor='#f1f5f9'" onmouseout="this.style.backgroundColor='${rowBg}'">
-                            <td style="padding: 0.85rem 1rem;"><strong style="color: #0f172a;">👤 ${op.first_name} ${op.last_name || ''}</strong></td>
-                            <td style="padding: 0.85rem 1rem; color: #475569;">${op.phone || 'N/A'}</td>
-                            <td style="padding: 0.85rem 1rem;"><code style="font-family: monospace; background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-weight: bold; color: #0f172a;">${op.pin || 'N/A'}</code></td>
-                            <td style="text-align: center; padding: 0.85rem 1rem;">${statusBadge}</td>
-                            <td style="text-align: right; padding: 0.85rem 1rem;">
-                                <div style="display: flex; gap: 0.5rem; justify-content: flex-end; align-items: center;">
-                                    <button class="btn-text" style="color: #0f172a; font-weight: 600; background: none; border: none; cursor: pointer; display: flex; align-items: center; gap: 0.2rem;" onclick="apriFascicoloOperatore('${op.id}', '${safeOpName}')" title="Fascicolo Virtuale Documenti"><span style="text-decoration: underline;">📁</span></button>
-                                    <span style="color: #cbd5e1;">|</span>
-                                    <button class="btn-text" style="color: #2563EB; font-weight: 600; background: none; border: none; cursor: pointer;" onclick="changeView('edit-staff', '${op.id}')">Modifica dati</button>
+                        <tr style="background-color: ${rowBg}; border-bottom: 1px solid #e2e8f0; cursor: pointer; transition: background-color 0.15s;" 
+                            onmouseover="this.style.backgroundColor='#f1f5f9'" 
+                            onmouseout="this.style.backgroundColor='${rowBg}'"
+                            onclick="changeView('edit-staff', '${op.id}')">
+                            
+                            <td style="padding: 1rem; display: flex; align-items: center; gap: 0.75rem;">
+                                <div style="width: 32px; height: 32px; border-radius: 50%; background: #e0e7ff; color: #4f46e5; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.85rem;">
+                                    ${op.first_name.charAt(0)}${op.last_name ? op.last_name.charAt(0) : ''}
                                 </div>
+                                <strong style="color: #0f172a;">${op.first_name} ${op.last_name || ''}</strong>
+                            </td>
+                            <td style="padding: 1rem; color: #475569;">${op.phone || '-'}</td>
+                            <td style="text-align: center; padding: 1rem;">
+                                <code style="font-family: monospace; background: #e2e8f0; padding: 4px 8px; border-radius: 6px; font-weight: bold; color: #0f172a; letter-spacing: 2px;">${op.pin || '0000'}</code>
+                            </td>
+                            <td style="text-align: center; padding: 1rem;">${statusBadge}</td>
+                            <td style="text-align: right; padding: 1rem; color: #3b82f6; font-size: 0.85rem; font-weight: 600;">
+                                Apri Fascicolo <span style="font-size: 1.1rem; vertical-align: middle;">›</span>
                             </td>
                         </tr>
                     `;
@@ -805,6 +1369,142 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
             staffHtml += `</tbody></table></div></div>`;
             viewContainer.innerHTML = staffHtml;
             break;
+        }
+
+        case 'edit-staff': {
+            apriModal('Fascicolo Operatore', `<p style="color:#64748b;">Caricamento dati in corso...</p>`);
+            
+            const { data: memberData } = await supabase.from('operators').select('*').eq('id', param1).single();
+            
+            // Recupera i documenti dalla TUA tabella esistente
+            const { data: documenti } = await supabase.from('operator_documents')
+                .select('*')
+                .eq('operator_id', param1)
+                .order('uploaded_at', { ascending: false });
+                
+            let filesListHtml = '';
+            if (documenti && documenti.length > 0) {
+                filesListHtml = documenti.map(doc => {
+                    const dataCaricamento = new Date(doc.uploaded_at).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                    return `
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 0.5rem;">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <span style="font-size: 1.2rem;">📄</span>
+                                <div>
+                                    <div style="color: #0f172a; font-weight: 600; font-size: 0.9rem; word-break: break-all;">${doc.file_name}</div>
+                                    <div style="color: #64748b; font-size: 0.75rem;">Caricato il ${dataCaricamento}</div>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <button type="button" class="btn-text" style="color: #4f46e5; font-size: 0.8rem; font-weight: 600;" onclick="scaricaDocumentoOperatore('${doc.storage_path}', '${doc.file_name.replace(/'/g, "\\'")}')">Vedi</button>
+                                <button type="button" class="btn-danger-text" style="font-size: 0.8rem; padding: 0;" onclick="eliminaDocumentoOperatore('${doc.id}', '${doc.storage_path}', '${param1}', '${(memberData.first_name + ' ' + (memberData.last_name || '')).replace(/'/g, "\\'")}')">Rimuovi</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                filesListHtml = '<p style="font-size: 0.8rem; font-style: italic; color: #94a3b8;">Nessun documento caricato per questo operatore.</p>';
+            }
+            
+            // Logica per i Tab della modale
+            window.switchStaffTab = function(tabName) {
+                document.querySelectorAll('.staff-tab-content').forEach(el => el.style.display = 'none');
+                document.querySelectorAll('.staff-tab-btn').forEach(el => {
+                    el.style.borderBottom = '2px solid transparent';
+                    el.style.color = '#64748b';
+                    el.style.fontWeight = '500';
+                });
+                
+                document.getElementById('tab-' + tabName).style.display = 'block';
+                const activeBtn = document.getElementById('btn-tab-' + tabName);
+                if (activeBtn) {
+                    activeBtn.style.borderBottom = '2px solid #3b82f6';
+                    activeBtn.style.color = '#3b82f6';
+                    activeBtn.style.fontWeight = '700';
+                }
+            };
+
+            const cType = memberData.contract_type || 'task';
+            const safeOpName = `${memberData.first_name} ${memberData.last_name || ''}`.replace(/'/g, "\\'");
+
+            apriModal(`Fascicolo Operatore: ${memberData.first_name} ${memberData.last_name || ''}`, `
+                <div style="display: flex; border-bottom: 1px solid #e2e8f0; margin-bottom: 1.5rem; margin-top: -1rem;">
+                    <button type="button" id="btn-tab-anagrafica" class="staff-tab-btn" onclick="switchStaffTab('anagrafica')" style="flex: 1; padding: 0.75rem; background: transparent; border: none; border-bottom: 2px solid #3b82f6; color: #3b82f6; font-weight: 700; cursor: pointer; transition: all 0.2s;">Anagrafica & Contratto</button>
+                    <button type="button" id="btn-tab-documenti" class="staff-tab-btn" onclick="switchStaffTab('documenti')" style="flex: 1; padding: 0.75rem; background: transparent; border: none; border-bottom: 2px solid transparent; color: #64748b; font-weight: 500; cursor: pointer; transition: all 0.2s;">Gestione Documenti</button>
+                </div>
+
+                <form onsubmit="aggiornaOperatore(event, '${param1}')">
+                    
+                    <!-- TAB 1: ANAGRAFICA E CONTRATTO -->
+                    <div id="tab-anagrafica" class="staff-tab-content" style="display: block;">
+                        <div class="form-row">
+                            <div class="form-group"><label class="form-label">Nome *</label><input type="text" id="form-staff-first" class="form-control" value="${memberData.first_name || ''}" required></div>
+                            <div class="form-group"><label class="form-label">Cognome</label><input type="text" id="form-staff-last" class="form-control" value="${memberData.last_name || ''}"></div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group"><label class="form-label">Telefono</label><input type="tel" id="form-staff-phone" class="form-control" value="${memberData.phone || ''}"></div>
+                            <div class="form-group">
+                                <label class="form-label">PIN Accesso App (4 cifre) *</label>
+                                <input type="text" id="form-staff-pin" class="form-control" value="${memberData.pin || ''}" maxlength="4" required style="font-family: monospace; letter-spacing: 2px; font-weight: bold;">
+                            </div>
+                        </div>
+
+                        <h4 style="margin-top: 1.5rem; margin-bottom: 1rem; color: #0f172a; font-size: 0.95rem; border-bottom: 1px solid #f1f5f9; padding-bottom: 0.5rem;">Inquadramento Economico</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">Tipo di Retribuzione</label>
+                                <select id="form-staff-contract-type" class="form-control">
+                                    <option value="task" ${cType === 'task' ? 'selected' : ''}>A Gettone (Per singola pulizia completata)</option>
+                                    <option value="hourly" ${cType === 'hourly' ? 'selected' : ''}>Tariffa Oraria</option>
+                                    <option value="fixed" ${cType === 'fixed' ? 'selected' : ''}>Stipendio Fisso Mensile</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Importo Concordato (€)</label>
+                                <input type="number" step="0.01" id="form-staff-contract-rate" class="form-control" value="${memberData.contract_rate || '0.00'}">
+                            </div>
+                        </div>
+                        
+                        <div class="form-group" style="margin-top: 1rem;">
+                            <label class="form-label" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                <input type="checkbox" id="form-staff-active" ${memberData.is_active !== false ? 'checked' : ''} style="width: 1.2rem; height: 1.2rem; accent-color: #10b981;">
+                                <span style="font-weight: 600; color: #334155;">Operatore Attivo (Consenti accesso)</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- TAB 2: DOCUMENTI -->
+                    <div id="tab-documenti" class="staff-tab-content" style="display: none;">
+                        <div style="background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 10px; padding: 1.25rem; margin-bottom: 1.5rem; text-align: center;">
+                            <label for="file-upload-input" style="cursor: pointer; display: block;">
+                                <span style="font-size: 1.5rem; display: block; margin-bottom: 0.25rem;">📤</span>
+                                <span style="color: #0f172a; font-weight: 700; font-size: 0.9rem;">Seleziona un file da aggiungere</span>
+                                <span style="display:block; font-size: 0.75rem; color: #64748b; margin-top: 0.2rem;">Contratti, Documenti d'identità, Certificati</span>
+                            </label>
+                            <!-- IL TUO UPLOAD ORIGINALE COLLEGATO QUI -->
+                            <input type="file" id="file-upload-input" style="display: none;" onchange="caricaDocumentoOperatore(this, '${param1}', '${safeOpName}')">
+                            <div id="upload-spinner" style="display: none; justify-content: center; align-items: center; gap: 0.5rem; margin-top: 0.5rem; color: #4f46e5; font-weight: 600; font-size: 0.85rem;">
+                                <div class="spinner" style="width: 16px; height: 16px; border: 2px solid #e2e8f0; border-top: 2px solid #4f46e5; border-radius: 50%; animation: spin 0.8s linear infinite;"></div> Caricamento nel Cloud...
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <h5 style="margin-bottom: 0.75rem; color: #475569;">File Archiviati:</h5>
+                            ${filesListHtml}
+                        </div>
+                    </div>
+
+                    <div class="form-actions" style="margin-top: 2rem; border-top: 1px solid #e2e8f0; padding-top: 1.25rem;">
+                        <button type="button" class="btn-danger-text" onclick="eliminaOperatore('${param1}')">Elimina Operatore</button>
+                        <div class="form-actions-right">
+                            <button type="button" class="btn-secondary" onclick="chiudiModal()">Annulla</button>
+                            <button type="submit" id="btn-update-staff" class="btn-primary">Salva Modifiche</button>
+                        </div>
+                    </div>
+                </form>
+            `);
+            break;
+        }
 
         case 'settings':
             if (pageTitle) pageTitle.textContent = 'Impostazioni di Sistema';
@@ -941,42 +1641,36 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
             viewContainer.innerHTML = settingsHtml;
             break;
 
-        case 'billing':
+        case 'billing': {
             if (pageTitle) pageTitle.textContent = 'Consuntivi Mensili e Fatturazioni B2B';
             viewContainer.innerHTML = `<p style="color: #64748b;">Elaborazione e calcolo dei corrispettivi in corso...</p>`;
 
-            const year = AppState.selectedBillingMonth.split('-')[0];
-            const month = AppState.selectedBillingMonth.split('-')[1];
-            
-            // Calcolo dinamico esatto dell'ultimo giorno del mese selezionato
-            const ultimoGiorno = new Date(year, parseInt(month), 0).getDate();
-            
-            const firstDayMonth = `${year}-${month}-01`;
-            const lastDayMonth = `${year}-${month}-${ultimoGiorno}`; 
-
-            const { data: bOwners } = await supabase.from('owners').select(`*, rooms(*)`).order('business_name');
-            
-            // Estrae anche task_item_usage e i catalog_items
-            const { data: bTasks, error: tasksError } = await supabase.from('tasks')
-                .select(`*, rooms(*, room_task_pricing(*)), task_kit_usage(*, laundry_kits(*)), task_item_usage(*, catalog_items(*))`)
-                .eq('status', 'done')
-                .gte('task_date', firstDayMonth)
-                .lte('task_date', lastDayMonth);
+            try {
+                const year = AppState.selectedBillingMonth.split('-')[0];
+                const month = AppState.selectedBillingMonth.split('-')[1];
                 
-            if (tasksError) {
-                 console.error("Errore recupero task fatturazione:", tasksError);
-            }
+                const ultimoGiorno = new Date(year, parseInt(month), 0).getDate();
+                
+                const firstDayMonth = `${year}-${month}-01`;
+                const lastDayMonth = `${year}-${month}-${ultimoGiorno}`; 
 
-            let billingHtml = `
-                <style>
-                    .print-only-invoice { display: none; }
-                    @media print {
-                        .print-only-invoice { display: block !important; }
-                        .web-only-header { display: none !important; }
-                        .owner-billing-card { border: none !important; box-shadow: none !important; padding: 0 !important; margin: 0 !important; }
-                        @page { margin: 15mm; }
-                    }
-                </style>
+                const { data: bOwners, error: ownersErr } = await supabase.from('owners').select('*, rooms(*)').order('business_name');
+                if (ownersErr) throw new Error("Errore recupero owners: " + ownersErr.message);
+                
+                const { data: bTasks, error: tasksError } = await supabase.from('tasks')
+                    .select('*, rooms(*, room_task_pricing(*)), task_kit_usage(*, laundry_kits(*)), task_item_usage(*, catalog_items(*))')
+                    .eq('status', 'done')
+                    .gte('task_date', firstDayMonth)
+                    .lte('task_date', lastDayMonth);
+                if (tasksError) throw new Error("Errore recupero tasks: " + tasksError.message);
+                    
+                const { data: bBookings, error: bookingsError } = await supabase.from('bookings')
+                    .select('*')
+                    .gte('check_out_date', firstDayMonth)
+                    .lte('check_out_date', lastDayMonth);
+                if (bookingsError) throw new Error("Errore recupero bookings: " + bookingsError.message);
+
+                let billingHtml = `
                 <div class="registry-header web-only-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap;">
                     <div>
                         <h2 style="margin:0; font-size:1.25rem;">Chiusura Mese Proprietari</h2>
@@ -987,196 +1681,191 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                         <input type="month" value="${AppState.selectedBillingMonth}" onchange="window.selezionaMeseFatture(this.value)" class="form-control" style="padding:0.4rem; border-radius:6px; border:1px solid #cbd5e1;">
                     </div>
                 </div>
-            `;
+                `;
 
-            // VARIABILI PER IL CRUSCOTTO STATISTICHE KPI GLOBALE
-            let globalTotalePulizie = 0;
-            let globalTotaleBiancheria = 0;
-            let globalTotaleGenerale = 0;
-            let clientRanking = [];
-            
-            let ownersCardsHtml = '';
+                let globalTotalePulizie = 0;
+                let globalTotaleBiancheria = 0;
+                let globalTotaleGenerale = 0;
+                let clientRanking = [];
+                let ownersCardsHtml = '';
 
-            bOwners?.forEach(owner => {
-                const ownerRoomIds = owner.rooms?.map(r => r.id) || [];
-                const ownerTasks = bTasks?.filter(t => ownerRoomIds.includes(t.room_id)) || [];
+                bOwners?.forEach(owner => {
+                    const ownerRoomIds = owner.rooms?.map(r => r.id) || [];
+                    const ownerTasks = bTasks?.filter(t => ownerRoomIds.includes(t.room_id)) || [];
 
-                let totalePulizie = 0;
-                let totaleBiancheria = 0;
-                let riepilogoRigheHtml = '';
+                    let totalePulizie = 0;
+                    let totaleBiancheria = 0;
+                    let riepilogoRigheHtml = '';
 
-                ownerTasks.forEach(task => {
-                    // Costo Pulizia
-                    let costoPulizia = 0;
-                    if (task.rooms && task.rooms.room_task_pricing) {
-                        const matchingPrice = task.rooms.room_task_pricing.find(p => p.task_type_name === task.task_type);
-                        if (matchingPrice) costoPulizia = parseFloat(matchingPrice.price) || 0;
-                    }
-                    totalePulizie += costoPulizia;
+                    ownerTasks.forEach(task => {
+                        let costoPulizia = 0;
+                        let dettaglioPuliziaHtml = '';
 
-                    let dettagliKitTask = [];
-                    let costoLavanderiaRiga = 0;
+                        const rBillingMode = task.rooms?.billing_mode || 'inherit';
+                        const finalBillingMode = (rBillingMode === 'inherit') ? (owner.default_billing_mode || 'task') : rBillingMode;
+
+                        if (finalBillingMode === 'pax') {
+                            const matchingBooking = bBookings?.find(b => b.room_id === task.room_id && b.check_out_date === task.task_date);
+                            const paxCount = matchingBooking ? matchingBooking.pax : 0;
+
+                            if (paxCount > 0) {
+                                const paxPrice = (rBillingMode === 'pax') ? (task.rooms?.custom_pax_price || 0) : (owner.default_pax_price || 0);
+                                costoPulizia = paxCount * parseFloat(paxPrice);
+                                dettaglioPuliziaHtml = `€ ${costoPulizia.toFixed(2)}<br><small style="color:#64748b; font-weight:normal;">(${paxCount} pax × €${parseFloat(paxPrice).toFixed(2)})</small>`;
+                            } else {
+                                if (task.rooms && task.rooms.room_task_pricing) {
+                                    const matchingPrice = task.rooms.room_task_pricing.find(p => p.task_type_name === task.task_type);
+                                    if (matchingPrice) costoPulizia = parseFloat(matchingPrice.price) || 0;
+                                }
+                                dettaglioPuliziaHtml = `€ ${costoPulizia.toFixed(2)}<br><small style="color:#f59e0b; font-size:0.7rem; font-weight:normal;">(Forfait Piano B)</small>`;
+                            }
+                        } else {
+                            if (task.rooms && task.rooms.room_task_pricing) {
+                                const matchingPrice = task.rooms.room_task_pricing.find(p => p.task_type_name === task.task_type);
+                                if (matchingPrice) costoPulizia = parseFloat(matchingPrice.price) || 0;
+                            }
+                            dettaglioPuliziaHtml = `€ ${costoPulizia.toFixed(2)}`;
+                        }
+
+                        totalePulizie += costoPulizia;
+
+                        let dettagliKitTask = [];
+                        let costoLavanderiaRiga = 0;
+                        
+                        task.task_kit_usage?.forEach(usage => {
+                            const costoSingoloKit = usage.laundry_kits?.price_per_unit || 0;
+                            const subtotaleKit = usage.quantity * costoSingoloKit;
+                            costoLavanderiaRiga += subtotaleKit;
+                            totaleBiancheria += subtotaleKit;
+                            if(usage.quantity > 0) {
+                                dettagliKitTask.push(`${usage.quantity}x ${usage.laundry_kits.name} (€${subtotaleKit.toFixed(2)})`);
+                            }
+                        });
+
+                        task.task_item_usage?.forEach(usage => {
+                            const costoSingoloArticolo = usage.catalog_items?.price_per_unit || 0;
+                            const subtotaleArticolo = usage.quantity * costoSingoloArticolo;
+                            costoLavanderiaRiga += subtotaleArticolo;
+                            totaleBiancheria += subtotaleArticolo;
+                            if(usage.quantity > 0) {
+                                dettagliKitTask.push(`<span style="color:#f59e0b;">+ ${usage.quantity}x ${usage.catalog_items.name} (€${subtotaleArticolo.toFixed(2)})</span>`);
+                            }
+                        });
+
+                        let totaleRiga = costoPulizia + costoLavanderiaRiga;
+
+                        riepilogoRigheHtml += `
+                            <tr style="border-bottom:1px solid #f1f5f9; font-size:0.85rem;">
+                                <td style="padding:0.6rem 0.5rem;">${new Date(task.task_date).toLocaleDateString('it-IT')}</td>
+                                <td style="padding:0.6rem 0.5rem;"><strong>${task.rooms?.name}</strong></td>
+                                <td style="padding:0.6rem 0.5rem;"><span class="badge badge-clean" style="font-size:0.7rem;">${task.task_type}</span></td>
+                                <td style="padding:0.6rem 0.5rem; text-align:center; font-weight:600;">${dettaglioPuliziaHtml}</td>
+                                <td style="padding:0.6rem 0.5rem; color:#4f46e5; font-size:0.8rem;">${dettagliKitTask.join('<br>') || '-'}</td>
+                                <td style="padding:0.6rem 0.5rem; text-align:right; font-weight:800; color:#0f172a;">€ ${totaleRiga.toFixed(2)}</td>
+                            </tr>
+                        `;
+                    });
+
+                    const totaleGeneraleOwner = totalePulizie + totaleBiancheria;
                     
-                    // Costo KIT INTERI
-                    task.task_kit_usage?.forEach(usage => {
-                        const costoSingoloKit = usage.laundry_kits?.price_per_unit || 0;
-                        const subtotaleKit = usage.quantity * costoSingoloKit;
-                        costoLavanderiaRiga += subtotaleKit;
-                        totaleBiancheria += subtotaleKit;
-                        if(usage.quantity > 0) {
-                            dettagliKitTask.push(`${usage.quantity}x ${usage.laundry_kits.name} (€${subtotaleKit.toFixed(2)})`);
-                        }
-                    });
+                    globalTotalePulizie += totalePulizie;
+                    globalTotaleBiancheria += totaleBiancheria;
+                    globalTotaleGenerale += totaleGeneraleOwner;
+                    
+                    if (totaleGeneraleOwner > 0) {
+                        clientRanking.push({ name: owner.business_name, total: totaleGeneraleOwner });
+                    }
 
-                    // Costo ARTICOLI SINGOLI
-                    task.task_item_usage?.forEach(usage => {
-                        const costoSingoloArticolo = usage.catalog_items?.price_per_unit || 0;
-                        const subtotaleArticolo = usage.quantity * costoSingoloArticolo;
-                        costoLavanderiaRiga += subtotaleArticolo;
-                        totaleBiancheria += subtotaleArticolo;
-                        if(usage.quantity > 0) {
-                            dettagliKitTask.push(`<span style="color:#f59e0b;">+ ${usage.quantity}x ${usage.catalog_items.name} (€${subtotaleArticolo.toFixed(2)})</span>`);
-                        }
-                    });
+                    ownersCardsHtml += `
+                        <div class="card owner-billing-card" id="billing-card-${owner.id}" style="background:white; border:1px solid #e2e8f0; border-radius:14px; padding:1.5rem; margin-bottom:2rem; box-shadow:0 4px 6px -1px rgba(0,0,0,0.02);">
+                            
+                            <div class="web-only-header" style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #f1f5f9; padding-bottom:1rem; margin-bottom:1rem; flex-wrap:wrap; gap:1rem;">
+                                <div>
+                                    <h3 style="margin:0; font-size:1.15rem; color:#0f172a;">🏢 ${owner.business_name}</h3>
+                                    <small style="color:#64748b;">P.IVA: ${owner.vat_number || 'N/A'} | ${ownerTasks.length} interventi eseguiti</small>
+                                </div>
+                            </div>
 
-                    let totaleRiga = costoPulizia + costoLavanderiaRiga;
-
-                    riepilogoRigheHtml += `
-                        <tr style="border-bottom:1px solid #f1f5f9; font-size:0.85rem;">
-                            <td style="padding:0.6rem 0.5rem;">${new Date(task.task_date).toLocaleDateString('it-IT')}</td>
-                            <td style="padding:0.6rem 0.5rem;"><strong>${task.rooms?.name}</strong></td>
-                            <td style="padding:0.6rem 0.5rem;"><span class="badge badge-clean" style="font-size:0.7rem;">${task.task_type}</span></td>
-                            <td style="padding:0.6rem 0.5rem; text-align:center; font-weight:600;">€ ${costoPulizia.toFixed(2)}</td>
-                            <td style="padding:0.6rem 0.5rem; color:#4f46e5; font-size:0.8rem;">${dettagliKitTask.join('<br>') || '-'}</td>
-                            <td style="padding:0.6rem 0.5rem; text-align:right; font-weight:800; color:#0f172a;">€ ${totaleRiga.toFixed(2)}</td>
-                        </tr>
+                            ${ownerTasks.length > 0 ? `
+                                <div class="table-responsive invoice-table-wrapper" style="margin-bottom:1.5rem; border:1px solid #e2e8f0; border-radius:8px;">
+                                    <table style="width:100%; border-collapse:collapse; text-align:left;">
+                                        <tr style="background:#f8fafc; border-bottom:2px solid #e2e8f0; font-size:0.8rem; color:#475569; text-transform:uppercase;">
+                                            <th style="padding:0.75rem 0.5rem;">Data</th>
+                                            <th style="padding:0.75rem 0.5rem;">Struttura</th>
+                                            <th style="padding:0.75rem 0.5rem;">Attività</th>
+                                            <th style="padding:0.75rem 0.5rem; text-align:center;">Manodopera</th>
+                                            <th style="padding:0.75rem 0.5rem;">Lavanderia / Extra</th>
+                                            <th style="padding:0.75rem 0.5rem; text-align:right;">Totale Riga</th>
+                                        </tr>
+                                        ${riepilogoRigheHtml}
+                                    </table>
+                                </div>
+                                
+                                <div style="display: flex; justify-content: flex-end; align-items: flex-end; flex-direction: column; gap: 0.5rem; margin-top: 2rem;">
+                                    <div style="display:flex; justify-content:flex-end; gap:15px; font-size:0.9rem; color: #475569;">
+                                        <span>Totale Servizi di Pulizia: <b>€ ${totalePulizie.toFixed(2)}</b></span>
+                                        <span>|</span>
+                                        <span>Totale Servizi Lavanderia: <b>€ ${totaleBiancheria.toFixed(2)}</b></span>
+                                    </div>
+                                    <div style="margin-top: 0.5rem; text-align: right;">
+                                        <span style="font-size:0.85rem; color:#64748b; font-weight:700; display:block; text-transform:uppercase; margin-bottom: 0.25rem;">Totale</span>
+                                        <strong style="font-size:2rem; color:#000000; line-height: 1;">€ ${totaleGeneraleOwner.toFixed(2)}</strong>
+                                    </div>
+                                </div>
+                            ` : '<p style="color:#94a3b8; font-style:italic; text-align:center; padding:2rem 0; margin:0; border: 1px dashed #e2e8f0; border-radius: 8px;">Nessun intervento registrato nel mese selezionato.</p>'}
+                        </div>
                     `;
                 });
-
-                const totaleGeneraleOwner = totalePulizie + totaleBiancheria;
                 
-                // Aggiorniamo i contatori globali per il cruscotto
-                globalTotalePulizie += totalePulizie;
-                globalTotaleBiancheria += totaleBiancheria;
-                globalTotaleGenerale += totaleGeneraleOwner;
-                
-                if (totaleGeneraleOwner > 0) {
-                    clientRanking.push({ name: owner.business_name, total: totaleGeneraleOwner });
-                }
+                clientRanking.sort((a, b) => b.total - a.total);
+                const topClientName = clientRanking.length > 0 ? clientRanking[0].name : 'Nessun dato in questo mese';
+                const topClientTotal = clientRanking.length > 0 ? `€ ${clientRanking[0].total.toFixed(2)}` : '';
 
-                ownersCardsHtml += `
-                    <div class="card owner-billing-card" id="billing-card-${owner.id}" style="background:white; border:1px solid #e2e8f0; border-radius:14px; padding:1.5rem; margin-bottom:2rem; box-shadow:0 4px 6px -1px rgba(0,0,0,0.02);">
-                        
-                        <!-- HEADER VISIBILE SOLO IN STAMPA (FATTURA) -->
-                        <div class="print-only-invoice">
-                            <div style="text-align: center; margin-bottom: 2.5rem;">
-                                <img src="./assets/images/logo2.png" alt="Logo" style="height: 80px; margin-bottom: 10px; object-fit: contain;">
-                                <h2 style="margin: 0; font-size: 1.4rem; color: #0f172a; font-weight: 800;">NOME TUA SOCIETÀ S.R.L.</h2>
-                                <p style="margin: 0.2rem 0 0 0; font-size: 0.85rem; color: #475569;">Via della Tua Sede 123, 00100 Città (PR) - P.IVA: 01234567890</p>
-                                <p style="margin: 0; font-size: 0.85rem; color: #475569;">Email: amministrazione@tuasocieta.it - Tel: +39 012 3456789</p>
-                            </div>
-                            
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 2px solid #0f172a;">
-                                <div style="text-align: left; max-width: 50%;">
-                                    <p style="margin: 0 0 0.5rem 0; font-size: 0.8rem; color: #64748b; font-weight: 700; text-transform: uppercase;">Intestato a:</p>
-                                    <h3 style="margin: 0; font-size: 1.15rem; color: #0f172a; font-weight: 800;">${owner.business_name}</h3>
-                                    <p style="margin: 0.2rem 0 0 0; font-size: 0.9rem; color: #0f172a;">P.IVA: ${owner.vat_number || 'Non inserita'}</p>
-                                    <p style="margin: 0; font-size: 0.9rem; color: #0f172a;">${owner.address || ''} ${owner.city ? '- ' + owner.city : ''}</p>
-                                </div>
-                                <div style="text-align: right;">
-                                    <p style="margin: 0 0 0.5rem 0; font-size: 0.8rem; color: #64748b; font-weight: 700; text-transform: uppercase;">Dettagli Documento:</p>
-                                    <h3 style="margin: 0; font-size: 1.15rem; color: #0f172a; font-weight: 800;">Proforma di Riepilogo</h3>
-                                    <p style="margin: 0.2rem 0 0 0; font-size: 0.9rem; color: #0f172a;">Data emissione: ${new Date().toLocaleDateString('it-IT')}</p>
-                                    <p style="margin: 0; font-size: 0.9rem; color: #0f172a;">Competenza: ${month}/${year}</p>
-                                </div>
-                            </div>
+                const kpiDashboardHtml = `
+                    <div class="web-only-header" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.25rem; margin-bottom: 2rem;">
+                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-left: 4px solid #10b981;">
+                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Fatturato Mese</span>
+                            <h3 style="margin: 0.5rem 0 0 0; font-size: 2rem; font-weight: 800; color: #0f172a;">€ ${globalTotaleGenerale.toFixed(2)}</h3>
                         </div>
-
-                        <!-- HEADER VISIBILE A SCHERMO (WEB) -->
-                        <div class="web-only-header" style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #f1f5f9; padding-bottom:1rem; margin-bottom:1rem; flex-wrap:wrap; gap:1rem;">
-                            <div>
-                                <h3 style="margin:0; font-size:1.15rem; color:#0f172a;">🏢 ${owner.business_name}</h3>
-                                <small style="color:#64748b;">P.IVA: ${owner.vat_number || 'N/A'} | ${ownerTasks.length} interventi eseguiti</small>
-                            </div>
+                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-left: 4px solid #3b82f6;">
+                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Ricavi Pulizie</span>
+                            <h3 style="margin: 0.5rem 0 0 0; font-size: 1.5rem; font-weight: 800; color: #0f172a;">€ ${globalTotalePulizie.toFixed(2)}</h3>
                         </div>
-
-                        ${ownerTasks.length > 0 ? `
-                            <div class="table-responsive invoice-table-wrapper" style="margin-bottom:1.5rem; border:1px solid #e2e8f0; border-radius:8px;">
-                                <table style="width:100%; border-collapse:collapse; text-align:left;">
-                                    <tr style="background:#f8fafc; border-bottom:2px solid #e2e8f0; font-size:0.8rem; color:#475569; text-transform:uppercase;">
-                                        <th style="padding:0.75rem 0.5rem;">Data</th>
-                                        <th style="padding:0.75rem 0.5rem;">Struttura</th>
-                                        <th style="padding:0.75rem 0.5rem;">Attività</th>
-                                        <th style="padding:0.75rem 0.5rem; text-align:center;">Manodopera</th>
-                                        <th style="padding:0.75rem 0.5rem;">Lavanderia / Extra</th>
-                                        <th style="padding:0.75rem 0.5rem; text-align:right;">Totale Riga</th>
-                                    </tr>
-                                    ${riepilogoRigheHtml}
-                                </table>
-                            </div>
-                            
-                            <!-- RIEPILOGO TOTALI A PIE DI PAGINA -->
-                            <div style="display: flex; justify-content: flex-end; align-items: flex-end; flex-direction: column; gap: 0.5rem; margin-top: 2rem;">
-                                <div style="display:flex; justify-content:flex-end; gap:15px; font-size:0.9rem; color: #475569;">
-                                    <span>Totale Servizi di Pulizia: <b>€ ${totalePulizie.toFixed(2)}</b></span>
-                                    <span>|</span>
-                                    <span>Totale Servizi Lavanderia: <b>€ ${totaleBiancheria.toFixed(2)}</b></span>
-                                </div>
-                                <div style="margin-top: 0.5rem; text-align: right;">
-                                    <span style="font-size:0.85rem; color:#64748b; font-weight:700; display:block; text-transform:uppercase; margin-bottom: 0.25rem;">Totale</span>
-                                    <strong style="font-size:2rem; color:#000000; line-height: 1;">€ ${totaleGeneraleOwner.toFixed(2)}</strong>
-                                </div>
-                            </div>
-                        ` : '<p style="color:#94a3b8; font-style:italic; text-align:center; padding:2rem 0; margin:0; border: 1px dashed #e2e8f0; border-radius: 8px;">Nessun intervento registrato nel mese selezionato.</p>'}
-
-                        <!-- BOTTONI AZIONE -->
-                        <div class="web-only-header" style="margin-top:2rem; display:flex; justify-content:flex-end; gap:10px; border-top:1px solid #f1f5f9; padding-top:1.5rem;">
-                            <button class="btn-secondary" style="font-size:0.85rem;" onclick="stampaSingoloReport('billing-card-${owner.id}')">🖨️ Stampa Fattura / Proforma</button>
-                            <button class="btn-primary" style="font-size:0.85rem; background:#10b981;" onclick="alert('Integrazione Stripe innescata! Funzione di inoltro link di pagamento attiva in produzione.')">💳 Richiedi Saldo con Stripe</button>
+                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-left: 4px solid #8b5cf6;">
+                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Ricavi Lavanderia</span>
+                            <h3 style="margin: 0.5rem 0 0 0; font-size: 1.5rem; font-weight: 800; color: #0f172a;">€ ${globalTotaleBiancheria.toFixed(2)}</h3>
+                        </div>
+                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-left: 4px solid #f59e0b;">
+                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">🏆 Top Cliente</span>
+                            <h3 style="margin: 0.5rem 0 0.2rem 0; font-size: 1.1rem; font-weight: 800; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${topClientName}">${topClientName}</h3>
+                            <span style="font-size: 0.95rem; font-weight: 700; color: #f59e0b;">${topClientTotal}</span>
                         </div>
                     </div>
                 `;
-            });
-            
-            // Ordiniamo la classifica per trovare il Top Cliente
-            clientRanking.sort((a, b) => b.total - a.total);
-            const topClientName = clientRanking.length > 0 ? clientRanking[0].name : 'Nessun dato in questo mese';
-            const topClientTotal = clientRanking.length > 0 ? `€ ${clientRanking[0].total.toFixed(2)}` : '';
 
-            // CREAZIONE DEL CRUSCOTTO KPI
-            const kpiDashboardHtml = `
-                <div class="web-only-header" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.25rem; margin-bottom: 2rem;">
-                    <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-left: 4px solid #10b981;">
-                        <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Fatturato Mese</span>
-                        <h3 style="margin: 0.5rem 0 0 0; font-size: 2rem; font-weight: 800; color: #0f172a;">€ ${globalTotaleGenerale.toFixed(2)}</h3>
-                    </div>
-                    <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-left: 4px solid #3b82f6;">
-                        <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Ricavi Pulizie</span>
-                        <h3 style="margin: 0.5rem 0 0 0; font-size: 1.5rem; font-weight: 800; color: #0f172a;">€ ${globalTotalePulizie.toFixed(2)}</h3>
-                    </div>
-                    <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-left: 4px solid #8b5cf6;">
-                        <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Ricavi Lavanderia</span>
-                        <h3 style="margin: 0.5rem 0 0 0; font-size: 1.5rem; font-weight: 800; color: #0f172a;">€ ${globalTotaleBiancheria.toFixed(2)}</h3>
-                    </div>
-                    <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-left: 4px solid #f59e0b;">
-                        <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">🏆 Top Cliente</span>
-                        <h3 style="margin: 0.5rem 0 0.2rem 0; font-size: 1.1rem; font-weight: 800; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${topClientName}">${topClientName}</h3>
-                        <span style="font-size: 0.95rem; font-weight: 700; color: #f59e0b;">${topClientTotal}</span>
-                    </div>
-                </div>
-            `;
+                viewContainer.innerHTML = billingHtml + kpiDashboardHtml + ownersCardsHtml;
 
-            viewContainer.innerHTML = billingHtml + kpiDashboardHtml + ownersCardsHtml;
+            } catch (err) {
+                console.error("ERRORE FATTURAZIONE:", err);
+                viewContainer.innerHTML = `
+                    <div style="padding: 2rem; color: #ef4444; background: #fee2e2; border-radius: 8px; border: 1px solid #f87171;">
+                        <h3 style="margin-top:0;">Ops! Errore nel motore di calcolo</h3>
+                        <p>Dettaglio tecnico: <b>${err.message || err}</b></p>
+                        <p style="font-size: 0.85rem; color: #b91c1c; margin-top: 1rem;">Copia questo testo in grassetto e dimmi cosa dice!</p>
+                    </div>`;
+            }
             break;
+        }
 
-         case 'subscription':
-            if (pageTitle) pageTitle.textContent = 'Il Mio Abbonamento';
-            viewContainer.innerHTML = `<p style="color: #64748b; text-align: center; padding: 2rem;">Sincronizzazione dati di fatturazione in corso...</p>`;
+        case 'profile': {
+            if (pageTitle) pageTitle.textContent = 'Il Mio Profilo e Abbonamento';
+            viewContainer.innerHTML = `<div style="display: flex; justify-content: center; padding: 3rem;"><div class="spinner" style="width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #3b82f6; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>`;
 
             try {
-                // AGGIUNTA FONDAMENTALE: Chiede a Supabase chi è loggato in questo istante
+                // Recupera l'utente loggato in questo istante
                 const { data: { session: activeSession } } = await supabase.auth.getSession();
                 const currentUserId = activeSession.user.id;
+                const userEmail = activeSession.user.email;
 
                 // 1. Recupera il numero di camere (licenze) attive per questo utente
                 const { count: roomsCount, error: roomsError } = await supabase
@@ -1190,77 +1879,128 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                 const costoUnitario = 5.00;
                 const totaleMensile = numeroLicenze * costoUnitario;
 
-                // Design minimale ed elegante per la dashboard
+                // Genera la UI del profilo divisa in comodi blocchi
                 viewContainer.innerHTML = `
-                    <div style="max-width: 800px; margin: 0 auto; padding: 1rem;">
+                    <style>
+                        .profile-section { background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 2rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); margin-bottom: 2rem; }
+                        .profile-header { border-bottom: 1px solid #f1f5f9; padding-bottom: 1.5rem; margin-bottom: 1.5rem; }
+                        .profile-title { font-size: 1.25rem; font-weight: 800; color: #0f172a; margin: 0 0 0.25rem 0; }
+                        .profile-subtitle { font-size: 0.9rem; color: #64748b; margin: 0; }
+                    </style>
+
+                    <div style="max-width: 900px; margin: 0 auto; padding: 1rem 0;">
                         
-                        <div style="text-align: center; margin-bottom: 3rem;">
-                            <h2 style="font-size: 2rem; color: #0f172a; font-weight: 800; margin-bottom: 0.5rem;">Gestione Piano e Fatturazione</h2>
-                            <p style="color: #64748b; font-size: 1.1rem; margin: 0;">Monitora le tue licenze attive e gestisci i metodi di pagamento.</p>
+                        <!-- SEZIONE DATI ANAGRAFICI -->
+                        <div class="profile-section">
+                            <div class="profile-header">
+                                <h3 class="profile-title">Dati Anagrafici Amministratore</h3>
+                                <p class="profile-subtitle">Le informazioni principali del tuo account di accesso.</p>
+                            </div>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem;">
+                                <div>
+                                    <label style="display: block; font-size: 0.8rem; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 0.5rem;">Email di Accesso</label>
+                                    <div style="background: #f8fafc; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid #e2e8f0; font-weight: 600; color: #0f172a;">
+                                        ${userEmail}
+                                    </div>
+                                </div>
+                                <div>
+                                    <label style="display: block; font-size: 0.8rem; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 0.5rem;">Ruolo Assegnato</label>
+                                    <div style="background: #f0fdf4; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid #bbf7d0; font-weight: 700; color: #166534; display: inline-block;">
+                                        👑 Super Admin
+                                    </div>
+                                </div>
+                            </div>
+                            <div style="margin-top: 1.5rem;">
+                                <button class="btn-secondary" onclick="alert('Funzione di aggiornamento password in sviluppo!')">Modifica Password</button>
+                            </div>
                         </div>
 
-                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 20px; padding: 2.5rem; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05); margin-bottom: 2rem;">
-                            <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 2rem;">
-                                
+                        <!-- SEZIONE ABBONAMENTO -->
+                        <div class="profile-section">
+                            <div class="profile-header" style="display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 1rem;">
                                 <div>
-                                    <span style="background: #e0e7ff; color: #4338ca; font-size: 0.85rem; font-weight: 700; padding: 0.4rem 0.8rem; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.5px;">Piano Attivo</span>
-                                    <h3 style="font-size: 1.75rem; color: #0f172a; font-weight: 800; margin: 1rem 0 0.5rem 0;">Licenza Camera CMC</h3>
-                                    <p style="color: #64748b; font-size: 1rem; margin: 0;">Fatturazione mensile automatica basata sul numero di strutture inserite a sistema.</p>
+                                    <h3 class="profile-title">Piano Abbonamento e Licenze</h3>
+                                    <p class="profile-subtitle">Gestisci il rinnovo mensile e le strutture collegate.</p>
                                 </div>
-
-                                <div style="text-align: right; background: #f8fafc; padding: 1.5rem; border-radius: 16px; border: 1px solid #f1f5f9; min-width: 200px;">
-                                    <p style="color: #64748b; font-size: 0.9rem; font-weight: 600; text-transform: uppercase; margin: 0 0 0.5rem 0;">Totale Mensile</p>
-                                    <div style="display: flex; align-items: baseline; justify-content: flex-end; gap: 0.2rem;">
-                                        <span style="font-size: 2.5rem; font-weight: 800; color: #0f172a; line-height: 1;">€${totaleMensile.toFixed(2)}</span>
-                                        <span style="color: #64748b; font-weight: 500;">/mese</span>
-                                    </div>
-                                    <p style="color: #10b981; font-size: 0.85rem; font-weight: 700; margin: 0.5rem 0 0 0;">IVA Esclusa</p>
-                                </div>
-
+                                <span style="background: #e0e7ff; color: #4338ca; font-size: 0.85rem; font-weight: 700; padding: 0.4rem 0.8rem; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.5px;">Piano Attivo: Licenza CMC</span>
                             </div>
 
-                            <div style="height: 1px; background: #e2e8f0; margin: 2rem 0;"></div>
-
-                            <div style="display: flex; align-items: center; justify-content: space-between;">
+                            <div style="display: flex; align-items: center; justify-content: space-between; background: #f8fafc; padding: 1.5rem; border-radius: 12px; border: 1px solid #e2e8f0; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
                                 <div style="display: flex; align-items: center; gap: 1rem;">
-                                    <div style="width: 48px; height: 48px; background: #f1f5f9; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.5rem;">
-                                        🏢
-                                    </div>
+                                    <div style="width: 48px; height: 48px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">🏢</div>
                                     <div>
                                         <p style="margin: 0; font-weight: 700; color: #0f172a; font-size: 1.1rem;">${numeroLicenze} Camere Configurate</p>
-                                        <p style="margin: 0; color: #64748b; font-size: 0.9rem;">€${costoUnitario.toFixed(2)} per singola licenza</p>
+                                        <p style="margin: 0; color: #64748b; font-size: 0.9rem;">€${costoUnitario.toFixed(2)} / licenza mensile</p>
                                     </div>
                                 </div>
-                                <button onclick="changeView('rooms')" style="background: none; border: 1px solid #cbd5e1; color: #0f172a; font-weight: 600; padding: 0.6rem 1.2rem; border-radius: 8px; cursor: pointer; transition: all 0.2s;">
-                                    Gestisci Camere
+                                <div style="text-align: right;">
+                                    <p style="color: #64748b; font-size: 0.85rem; font-weight: 700; text-transform: uppercase; margin: 0 0 0.25rem 0;">Totale Mensile</p>
+                                    <div style="display: flex; align-items: baseline; justify-content: flex-end; gap: 0.2rem;">
+                                        <span style="font-size: 2rem; font-weight: 800; color: #0f172a; line-height: 1;">€${totaleMensile.toFixed(2)}</span>
+                                        <span style="color: #64748b; font-weight: 600;">+IVA</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div style="background: #0f172a; border-radius: 12px; padding: 1.5rem 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1.5rem; box-shadow: 0 10px 15px -3px rgba(15, 23, 42, 0.3);">
+                                <div style="flex: 1;">
+                                    <h4 style="color: white; font-size: 1.1rem; font-weight: 700; margin: 0 0 0.25rem 0;">Fatture e Metodi di Pagamento</h4>
+                                    <p style="color: #94a3b8; font-size: 0.9rem; margin: 0; line-height: 1.4;">Scarica l'archivio delle tue fatture o cambia la carta di credito sul portale sicuro Stripe.</p>
+                                </div>
+                                <button onclick="apriPortaleStripe()" style="background: white; color: #0f172a; border: none; font-weight: 700; font-size: 0.95rem; padding: 0.75rem 1.25rem; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; transition: transform 0.2s;">
+                                    Apri Portale Sicuro &rarr;
                                 </button>
                             </div>
                         </div>
-
-                        <div style="background: #0f172a; border-radius: 20px; padding: 2rem 2.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1.5rem; box-shadow: 0 10px 15px -3px rgba(15, 23, 42, 0.3);">
-                            <div style="flex: 1;">
-                                <h4 style="color: white; font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem 0;">Fatture e Metodi di Pagamento</h4>
-                                <p style="color: #94a3b8; font-size: 0.95rem; margin: 0; line-height: 1.5;">Scarica l'archivio delle tue fatture in PDF, aggiorna i dati aziendali o cambia la carta di credito utilizzata per il rinnovo tramite il nostro portale sicuro.</p>
-                            </div>
-                            <button onclick="apriPortaleStripe()" style="background: white; color: #0f172a; border: none; font-weight: 700; font-size: 1rem; padding: 0.8rem 1.5rem; border-radius: 10px; cursor: pointer; display: flex; align-items: center; gap: 0.5rem;">
-                                Apri Portale Sicuro &rarr;
-                            </button>
-                        </div>
-
                     </div>
                 `;
             } catch (err) {
                 console.error(err);
-                viewContainer.innerHTML = `<p style="color: #ef4444; text-align: center; padding: 2rem;">Si è verificato un errore nel caricamento dei dati di fatturazione.</p>`;
+                viewContainer.innerHTML = `<p style="color: #ef4444; text-align: center; padding: 2rem;">Si è verificato un errore nel caricamento del profilo.</p>`;
             }
             break;
+        }
 
-        case 'add-catalog-item':
+       case 'add-catalog-item':
             apriModal('Nuovo Articolo Magazzino', `
                 <form onsubmit="salvaCatalogItem(event)">
-                    <div class="form-group" style="margin-bottom: 1rem;"><label class="form-label" style="font-weight: 600;">Nome Articolo *</label><input type="text" id="form-catalog-name" class="form-control" required></div>
-                    <div class="form-group" style="margin-bottom: 1rem;"><label class="form-label" style="font-weight: 600;">Prezzo Addebito Extra (€)</label><input type="number" step="0.01" id="form-catalog-price" class="form-control" value="0.00" required></div>
-                    <div class="form-actions" style="margin-top: 2rem; border-top: 1px solid #e2e8f0; padding-top: 1.25rem;"><div class="form-actions-right"><button type="button" class="btn-secondary" onclick="chiudiModal()">Annulla</button><button type="submit" id="btn-salva-catalog" class="btn-primary" style="background: #6366f1; border: none;">Salva Articolo</button></div></div>
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label class="form-label" style="font-weight: 600;">Nome Articolo *</label>
+                        <input type="text" id="form-catalog-name" class="form-control" required>
+                    </div>
+                    
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label class="form-label" style="font-weight: 600;">Categoria Merceologica *</label>
+                        <select id="form-catalog-category" class="form-control" required>
+                            <option value="" disabled selected>Seleziona una categoria...</option>
+                            <option value="Biancheria Letto">Biancheria Letto</option>
+                            <option value="Biancheria Bagno">Biancheria Bagno</option>
+                            <option value="Detergenti e Chimici">Detergenti e Chimici</option>
+                            <option value="Amenities (Cortesia)">Amenities (Cortesia)</option>
+                            <option value="Attrezzature">Attrezzature</option>
+                            <option value="Altro">Altro</option>
+                        </select>
+                    </div>
+
+                    <div class="form-row" style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                        <div class="form-group" style="flex: 1;">
+                            <label class="form-label" style="font-weight: 600;">Prezzo Addebito Extra (€)</label>
+                            <input type="number" step="0.01" id="form-catalog-price" class="form-control" value="0.00" required>
+                        </div>
+                        
+                        <div class="form-group" style="flex: 1;">
+                            <label class="form-label" style="font-weight: 600;">Soglia Minima (Alert LED) *</label>
+                            <input type="number" id="form-catalog-min-stock" class="form-control" value="10" required>
+                            <p style="font-size: 0.7rem; color: #64748b; margin-top: 0.25rem;">Il LED diventerà rosso sotto questa soglia.</p>
+                        </div>
+                    </div>
+                    
+                    <div class="form-actions" style="margin-top: 2rem; border-top: 1px solid #e2e8f0; padding-top: 1.25rem;">
+                        <div class="form-actions-right">
+                            <button type="button" class="btn-secondary" onclick="chiudiModal()">Annulla</button>
+                            <button type="submit" id="btn-salva-catalog" class="btn-primary" style="background: #6366f1; border: none;">Salva Articolo</button>
+                        </div>
+                    </div>
                 </form>
             `);
             break;
@@ -1268,10 +2008,44 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
         case 'edit-catalog-item':
             apriModal('Modifica Articolo', `<p>Caricamento dati in corso...</p>`);
             const { data: itemData } = await supabase.from('catalog_items').select('*').eq('id', param1).single();
+            
+            // Variabile di supporto per la selezione della categoria
+            const cat = itemData.category || 'Altro';
+            // Variabile di supporto per la soglia minima (evita "undefined" se il campo nel DB è vuoto)
+            const minStockVal = itemData.min_stock !== undefined && itemData.min_stock !== null ? itemData.min_stock : 10;
+
             apriModal('Modifica Articolo Magazzino', `
                 <form onsubmit="aggiornaCatalogItem(event, '${param1}')">
-                    <div class="form-group" style="margin-bottom: 1rem;"><label class="form-label" style="font-weight: 600;">Nome Articolo *</label><input type="text" id="form-catalog-name" class="form-control" value="${itemData.name}" required></div>
-                    <div class="form-group" style="margin-bottom: 1rem;"><label class="form-label" style="font-weight: 600;">Prezzo Addebito Extra (€)</label><input type="number" step="0.01" id="form-catalog-price" class="form-control" value="${itemData.price_per_unit || '0.00'}" required></div>
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label class="form-label" style="font-weight: 600;">Nome Articolo *</label>
+                        <input type="text" id="form-catalog-name" class="form-control" value="${itemData.name}" required>
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label class="form-label" style="font-weight: 600;">Categoria Merceologica *</label>
+                        <select id="form-catalog-category" class="form-control" required>
+                            <option value="Biancheria Letto" ${cat === 'Biancheria Letto' ? 'selected' : ''}>Biancheria Letto</option>
+                            <option value="Biancheria Bagno" ${cat === 'Biancheria Bagno' ? 'selected' : ''}>Biancheria Bagno</option>
+                            <option value="Detergenti e Chimici" ${cat === 'Detergenti e Chimici' ? 'selected' : ''}>Detergenti e Chimici</option>
+                            <option value="Amenities (Cortesia)" ${cat === 'Amenities (Cortesia)' ? 'selected' : ''}>Amenities (Cortesia)</option>
+                            <option value="Attrezzature" ${cat === 'Attrezzature' ? 'selected' : ''}>Attrezzature</option>
+                            <option value="Altro" ${cat === 'Altro' ? 'selected' : ''}>Altro</option>
+                        </select>
+                    </div>
+
+                    <div class="form-row" style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                        <div class="form-group" style="flex: 1;">
+                            <label class="form-label" style="font-weight: 600;">Prezzo Addebito Extra (€)</label>
+                            <input type="number" step="0.01" id="form-catalog-price" class="form-control" value="${itemData.price_per_unit || '0.00'}" required>
+                        </div>
+
+                        <div class="form-group" style="flex: 1;">
+                            <label class="form-label" style="font-weight: 600;">Soglia Minima (Alert LED) *</label>
+                            <input type="number" id="form-catalog-min-stock" class="form-control" value="${minStockVal}" required>
+                            <p style="font-size: 0.7rem; color: #64748b; margin-top: 0.25rem;">Il LED diventerà rosso sotto questa soglia.</p>
+                        </div>
+                    </div>
+
                     <div class="form-actions" style="margin-top: 2rem; border-top: 1px solid #e2e8f0; padding-top: 1.25rem; display: flex; justify-content: space-between;">
                         <button type="button" onclick="eliminaCatalogItem('${param1}')" class="btn-text" style="color: #ef4444; font-weight: 600; background: none; border: none; cursor: pointer;">Elimina Definitivamente</button>
                         <div style="display: flex; gap: 1rem;">
@@ -1314,39 +2088,6 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
             `);
             break;
 
-        case 'edit-staff':
-            apriModal('Modifica Operatore', `<p>Caricamento dati operatore in corso...</p>`);
-            const { data: opData } = await supabase.from('operators').select('*').eq('id', param1).single();
-            apriModal('Modifica Operatore', `
-                <form onsubmit="aggiornaOperatore(event, '${param1}')">
-                    <h3 style="margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Dati Personali</h3>
-                    <div class="form-row">
-                        <div class="form-group"><label class="form-label">Nome *</label><input type="text" id="form-staff-first" class="form-control" value="${opData.first_name || ''}" required></div>
-                        <div class="form-group"><label class="form-label">Cognome *</label><input type="text" id="form-staff-last" class="form-control" value="${opData.last_name || ''}" required></div>
-                    </div>
-                    <h3 style="margin-top: 1.5rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Credenziali Accesso</h3>
-                    <div class="form-group"><label class="form-label">Telefono (Usato come ID di Login) *</label><input type="tel" id="form-staff-phone" class="form-control" value="${opData.phone || ''}" required></div>
-                    <div class="form-group"><label class="form-label">PIN a 4 cifre *</label>
-                        <div style="display: flex; gap: 0.5rem;">
-                            <input type="text" id="form-staff-pin" class="form-control" value="${opData.pin || ''}" maxlength="4" style="font-family: monospace; font-size: 1.2rem; letter-spacing: 2px; font-weight: bold;" required>
-                            <button type="button" class="btn-secondary" onclick="generaPin()">🎲</button>
-                        </div>
-                    </div>
-                    <div class="form-group" style="margin-top: 2rem;">
-                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: 600; color: var(--primary-color);">
-                            <input type="checkbox" id="form-staff-active" ${opData.is_active ? 'checked' : ''} style="width: 1.2rem; height: 1.2rem;"> Operatore Attivo
-                        </label>
-                    </div>
-                    <div class="form-actions" style="margin-top: 2rem; border-top: 1px solid #e2e8f0; padding-top: 1.25rem;">
-                        <button type="button" class="btn-danger-text" onclick="eliminaOperatore('${param1}')">Elimina Operatore</button>
-                        <div class="form-actions-right">
-                            <button type="button" class="btn-secondary" onclick="chiudiModal()">Annulla</button>
-                            <button type="submit" id="btn-update-staff" class="btn-primary">Aggiorna Dati</button>
-                        </div>
-                    </div>
-                </form>
-            `);
-            break;
 
         case 'add-company':
             apriModal('Nuova Anagrafica Società', `
@@ -1373,6 +2114,22 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                         <div class="form-group"><label class="form-label">CAP</label><input type="text" id="form-zip" class="form-control"></div>
                     </div>
                     <div class="form-group"><label class="form-label">Via e Numero Civico</label><input type="text" id="form-address" class="form-control"></div>
+                    
+                    <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Impostazioni Finanziarie (B2B)</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Modalità di Fatturazione Base *</label>
+                            <select id="form-default-billing" class="form-control" onchange="document.getElementById('wrap-pax-price').style.display = this.value === 'pax' ? 'block' : 'none'">
+                                <option value="task">A Intervento (Tariffa fissa per pulizia)</option>
+                                <option value="pax">A Persona (Tariffa calcolata sui Pax)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="wrap-pax-price" style="display: none;">
+                            <label class="form-label">Tariffa per Singolo Ospite (€) *</label>
+                            <input type="number" step="0.01" id="form-default-pax-price" class="form-control" value="0.00">
+                        </div>
+                    </div>
+
                     <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Contatti</h3>
                     <div class="form-row">
                         <div class="form-group"><label class="form-label">Nome</label><input type="text" id="form-contact-first" class="form-control"></div>
@@ -1395,6 +2152,11 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
         case 'edit-company':
             apriModal('Modifica Anagrafica', `<p>Caricamento anagrafica in corso...</p>`);
             const { data: ownerData } = await supabase.from('owners').select('*').eq('id', param1).single();
+            
+            const billMode = ownerData.default_billing_mode || 'task';
+            const paxDisplay = billMode === 'pax' ? 'block' : 'none';
+            const paxPrice = ownerData.default_pax_price || '0.00';
+
             apriModal('Modifica Anagrafica', `
                 <form onsubmit="aggiornaSocieta(event, '${param1}')">
                     <h3 style="margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Dati Azienda</h3>
@@ -1419,6 +2181,22 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                         <div class="form-group"><label class="form-label">CAP</label><input type="text" id="form-zip" class="form-control" value="${ownerData.zip_code || ''}"></div>
                     </div>
                     <div class="form-group"><label class="form-label">Via e Numero Civico</label><input type="text" id="form-address" class="form-control" value="${ownerData.address || ''}"></div>
+                    
+                    <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Impostazioni Finanziarie (B2B)</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Modalità di Fatturazione Base *</label>
+                            <select id="form-default-billing" class="form-control" onchange="document.getElementById('wrap-edit-pax-price').style.display = this.value === 'pax' ? 'block' : 'none'">
+                                <option value="task" ${billMode === 'task' ? 'selected' : ''}>A Intervento (Tariffa fissa per pulizia)</option>
+                                <option value="pax" ${billMode === 'pax' ? 'selected' : ''}>A Persona (Tariffa calcolata sui Pax)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="wrap-edit-pax-price" style="display: ${paxDisplay};">
+                            <label class="form-label">Tariffa per Singolo Ospite (€) *</label>
+                            <input type="number" step="0.01" id="form-default-pax-price" class="form-control" value="${paxPrice}">
+                        </div>
+                    </div>
+
                     <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Contatti</h3>
                     <div class="form-row">
                         <div class="form-group"><label class="form-label">Nome</label><input type="text" id="form-contact-first" class="form-control" value="${ownerData.contact_first_name || ''}"></div>
@@ -1474,13 +2252,31 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                         <div class="form-group"><label class="form-label">CAP</label><input type="text" id="form-room-zip" class="form-control"></div>
                     </div>
                     <div class="form-group"><label class="form-label">Provincia (Sigla)</label><input type="text" id="form-room-province" class="form-control" maxlength="2"></div>
+                    
                     <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Accessi e Sicurezza</h3>
                     <div class="form-row">
                         <div class="form-group"><label class="form-label">Tastierino Porta (Codice)</label><input type="text" id="form-door-code" class="form-control" placeholder="Nessun codice = Chiave"></div>
                         <div class="form-group"><label class="form-label">Lucchetto Scorte (Codice)</label><input type="text" id="form-lockbox-code" class="form-control" placeholder="Nessun codice = Chiave"></div>
                     </div>
-                    
+
+                    <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Deroga Fatturazione Appartamento</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Regola di Fatturazione *</label>
+                            <select id="form-room-billing-mode" class="form-control" onchange="document.getElementById('wrap-room-pax').style.display = this.value === 'pax' ? 'block' : 'none'">
+                                <option value="inherit">Usa la regola della Società (Predefinita)</option>
+                                <option value="task">Forza ad Intervento (Ignora società)</option>
+                                <option value="pax">Forza a Persona (Ignora società)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="wrap-room-pax" style="display: none;">
+                            <label class="form-label">Tariffa Specifica per Singolo Ospite (€)</label>
+                            <input type="number" step="0.01" id="form-room-pax-price" class="form-control" value="0.00">
+                        </div>
+                    </div>
+
                     <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Listino Prezzi B2B (€)</h3>
+                    <p style="font-size: 0.8rem; color: #64748b; margin-top: -1rem; margin-bottom: 1rem;">Compila queste tariffe fisse anche se usi la modalità "A Persona", verranno usate come piano B per interventi fuori standard.</p>
                     ${dynamicPriceFieldsHtml}
 
                     <div class="form-actions" style="margin-top: 2rem; border-top: 1px solid #e2e8f0; padding-top: 1.25rem;">
@@ -1499,6 +2295,11 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
             const { data: roomData } = await supabase.from('rooms').select('*, room_task_pricing(*)').eq('id', param1).single();
             const { data: taskTypesForEdit } = await supabase.from('task_types').select('*').order('name');
             
+            // Logica visualizzazione dati fatturazione
+            const rBillMode = roomData.billing_mode || 'inherit';
+            const rPaxDisplay = rBillMode === 'pax' ? 'block' : 'none';
+            const rPaxPrice = roomData.custom_pax_price || '0.00';
+
             let dynamicPriceFieldsEditHtml = '';
             if (taskTypesForEdit && taskTypesForEdit.length > 0) {
                 dynamicPriceFieldsEditHtml = `<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; background: #f8fafc; padding: 1rem; border-radius: 8px; border: 1px solid #e2e8f0;">`;
@@ -1532,13 +2333,31 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                         <div class="form-group"><label class="form-label">CAP</label><input type="text" id="form-room-zip" class="form-control" value="${roomData.zip_code || ''}"></div>
                     </div>
                     <div class="form-group"><label class="form-label">Provincia (Sigla)</label><input type="text" id="form-room-province" class="form-control" maxlength="2" value="${roomData.province || ''}"></div>
+                    
                     <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Accessi e Sicurezza</h3>
                     <div class="form-row">
                         <div class="form-group"><label class="form-label">Tastierino Porta (Codice)</label><input type="text" id="form-door-code" class="form-control" value="${roomData.door_code || ''}"></div>
                         <div class="form-group"><label class="form-label">Lucchetto Scorte (Codice)</label><input type="text" id="form-lockbox-code" class="form-control" value="${roomData.lockbox_code || ''}"></div>
                     </div>
 
+                    <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Deroga Fatturazione Appartamento</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Regola di Fatturazione *</label>
+                            <select id="form-room-billing-mode" class="form-control" onchange="document.getElementById('wrap-edit-room-pax').style.display = this.value === 'pax' ? 'block' : 'none'">
+                                <option value="inherit" ${rBillMode === 'inherit' ? 'selected' : ''}>Usa la regola della Società (Predefinita)</option>
+                                <option value="task" ${rBillMode === 'task' ? 'selected' : ''}>Forza ad Intervento (Ignora società)</option>
+                                <option value="pax" ${rBillMode === 'pax' ? 'selected' : ''}>Forza a Persona (Ignora società)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="wrap-edit-room-pax" style="display: ${rPaxDisplay};">
+                            <label class="form-label">Tariffa Specifica per Singolo Ospite (€)</label>
+                            <input type="number" step="0.01" id="form-room-pax-price" class="form-control" value="${rPaxPrice}">
+                        </div>
+                    </div>
+
                     <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Listino Prezzi B2B (€)</h3>
+                    <p style="font-size: 0.8rem; color: #64748b; margin-top: -1rem; margin-bottom: 1rem;">Compila queste tariffe fisse anche se usi la modalità "A Persona", verranno usate come piano B per interventi fuori standard.</p>
                     ${dynamicPriceFieldsEditHtml}
 
                     <div class="form-actions" style="margin-top: 2rem; border-top: 1px solid #e2e8f0; padding-top: 1.25rem;">
@@ -1864,9 +2683,29 @@ window.modificaContatore = function(spanElement, roomId, field, currentValue) {
 // ==========================================
 // FUNZIONI DI SALVATAGGIO (CRUD) - ROOMS E STAFF
 // ==========================================
-function getAnagraficaPayload() { return { business_name: document.getElementById('form-business-name').value, vat_number: document.getElementById('form-vat').value, tax_code: document.getElementById('form-tax-code').value, sdi_code: document.getElementById('form-sdi').value, pec: document.getElementById('form-pec').value, country: document.getElementById('form-country').value, region: document.getElementById('form-region').value, province: document.getElementById('form-province').value, city: document.getElementById('form-city').value, zip_code: document.getElementById('form-zip').value, address: document.getElementById('form-address').value, contact_first_name: document.getElementById('form-contact-first').value, contact_last_name: document.getElementById('form-contact-last').value, contact_phone: document.getElementById('form-phone').value, contact_email: document.getElementById('form-email').value }; }
+function getAnagraficaPayload() { 
+    return { 
+        business_name: document.getElementById('form-business-name').value, 
+        vat_number: document.getElementById('form-vat').value, 
+        tax_code: document.getElementById('form-tax-code').value, 
+        sdi_code: document.getElementById('form-sdi').value, 
+        pec: document.getElementById('form-pec').value, 
+        country: document.getElementById('form-country').value, 
+        region: document.getElementById('form-region').value, 
+        province: document.getElementById('form-province').value, 
+        city: document.getElementById('form-city').value, 
+        zip_code: document.getElementById('form-zip').value, 
+        address: document.getElementById('form-address').value, 
+        contact_first_name: document.getElementById('form-contact-first').value, 
+        contact_last_name: document.getElementById('form-contact-last').value, 
+        contact_phone: document.getElementById('form-phone').value, 
+        contact_email: document.getElementById('form-email').value,
+        // NUOVI CAMPI FATTURAZIONE
+        default_billing_mode: document.getElementById('form-default-billing').value,
+        default_pax_price: parseFloat(document.getElementById('form-default-pax-price').value) || 0
+    }; 
+}
 
-// PAYLOAD ANAGRAFICA CAMERA (Rimosse le colonne di prezzo fisse)
 function getRoomPayload(ownerId = null) { 
     const payload = { 
         name: document.getElementById('form-room-name').value, 
@@ -1876,7 +2715,10 @@ function getRoomPayload(ownerId = null) {
         address: document.getElementById('form-room-address').value, 
         zip_code: document.getElementById('form-room-zip').value, 
         door_code: document.getElementById('form-door-code').value, 
-        lockbox_code: document.getElementById('form-lockbox-code').value
+        lockbox_code: document.getElementById('form-lockbox-code').value,
+        // NUOVI CAMPI FATTURAZIONE
+        billing_mode: document.getElementById('form-room-billing-mode').value,
+        custom_pax_price: parseFloat(document.getElementById('form-room-pax-price').value) || 0
     }; 
     if (ownerId) payload.owner_id = ownerId; 
     return payload; 
@@ -1986,7 +2828,7 @@ window.vaiAdOggi = function() { AppState.selectedTaskDate = new Date().toISOStri
 window.cambiaGiorno = function(offset) { window.navigaTempo(offset); };
 
 window.selezionaMeseFatture = function(meseValue) { AppState.selectedBillingMonth = meseValue; changeView('billing'); };
-
+window.selezionaMeseReport = function(meseValue) { AppState.selectedReportMonth = meseValue; changeView('reports'); };
 
 // ==========================================
 // GESTIONE FASCICOLO DIGITALE OPERATORI
@@ -2073,7 +2915,10 @@ window.caricaDocumentoOperatore = async function(inputElement, operatorId, opera
         const { error: dbError } = await supabase.from('operator_documents').insert([{ operator_id: operatorId, file_name: file.name, storage_path: storagePath }]);
         if (dbError) throw dbError;
 
-        apriFascicoloOperatore(operatorId, operatorName);
+        // Ricarica la modale edit-staff e apre il tab documenti
+        changeView('edit-staff', operatorId);
+        setTimeout(() => switchStaffTab('documenti'), 150);
+
     } catch (err) {
         console.error(err);
         alert("Errore durante il caricamento del file: " + (err.message || err));
@@ -2098,13 +2943,27 @@ window.eliminaDocumentoOperatore = async function(docId, storagePath, operatorId
         const { error: dbError } = await supabase.from('operator_documents').delete().eq('id', docId);
         if (dbError) throw dbError;
 
-        apriFascicoloOperatore(operatorId, operatorName);
+        // Ricarica la modale edit-staff e apre il tab documenti
+        changeView('edit-staff', operatorId);
+        setTimeout(() => switchStaffTab('documenti'), 150);
+
     } catch (err) { alert("Errore durante la cancellazione: " + err.message); }
 };
 
 // Logica Staff
 window.generaPin = function() { document.getElementById('form-staff-pin').value = Math.floor(1000 + Math.random() * 9000); };
-function getStaffPayload() { return { first_name: document.getElementById('form-staff-first').value, last_name: document.getElementById('form-staff-last').value, phone: document.getElementById('form-staff-phone').value, pin: document.getElementById('form-staff-pin').value, is_active: document.getElementById('form-staff-active').checked }; }
+
+function getStaffPayload() { 
+    return { 
+        first_name: document.getElementById('form-staff-first').value, 
+        last_name: document.getElementById('form-staff-last').value, 
+        phone: document.getElementById('form-staff-phone').value, 
+        pin: document.getElementById('form-staff-pin').value, 
+        is_active: document.getElementById('form-staff-active').checked,
+        contract_type: document.getElementById('form-staff-contract-type') ? document.getElementById('form-staff-contract-type').value : 'task',
+        contract_rate: document.getElementById('form-staff-contract-rate') ? (parseFloat(document.getElementById('form-staff-contract-rate').value) || 0) : 0
+    }; 
+}
 
 window.salvaOperatore = async function(event) { event.preventDefault(); document.getElementById('btn-salva-staff').disabled = true; await supabase.from('operators').insert([getStaffPayload()]); chiudiModal(); changeView(AppState.currentView); };
 window.aggiornaOperatore = async function(event, opId) { event.preventDefault(); document.getElementById('btn-update-staff').disabled = true; await supabase.from('operators').update(getStaffPayload()).eq('id', opId); chiudiModal(); changeView(AppState.currentView); };
@@ -2180,23 +3039,29 @@ window.chiudiModal = function() {
 // FUNZIONI COSTRUTTORE KIT E CATALOGO
 // ==========================================
 window.salvaCatalogItem = async function(event) { 
-    event.preventDefault(); document.getElementById('btn-salva-catalog').disabled = true; 
+    event.preventDefault(); 
+    document.getElementById('btn-salva-catalog').disabled = true; 
     const payload = { 
         name: document.getElementById('form-catalog-name').value,
-        price_per_unit: parseFloat(document.getElementById('form-catalog-price').value) || 0
+        price_per_unit: parseFloat(document.getElementById('form-catalog-price').value) || 0,
+        category: document.getElementById('form-catalog-category').value.trim() || 'Altro' // <--- AGGIUNTA
     };
     await supabase.from('catalog_items').insert([payload]); 
-    chiudiModal(); changeView('settings'); 
+    chiudiModal(); 
+    changeView('settings'); 
 };
 
 window.aggiornaCatalogItem = async function(event, itemId) { 
-    event.preventDefault(); document.getElementById('btn-update-catalog').disabled = true; 
+    event.preventDefault(); 
+    document.getElementById('btn-update-catalog').disabled = true; 
     const payload = { 
         name: document.getElementById('form-catalog-name').value,
-        price_per_unit: parseFloat(document.getElementById('form-catalog-price').value) || 0
+        price_per_unit: parseFloat(document.getElementById('form-catalog-price').value) || 0,
+        category: document.getElementById('form-catalog-category').value.trim() || 'Altro' // <--- AGGIUNTA
     };
     await supabase.from('catalog_items').update(payload).eq('id', itemId); 
-    chiudiModal(); changeView('settings'); 
+    chiudiModal(); 
+    changeView('settings'); 
 };
 
 window.eliminaCatalogItem = async function(id) { 
@@ -3074,4 +3939,144 @@ window.aggiornaPrenotazione = async function(event, bookingId, roomId, oldCheckO
     // 3. Chiude il form e ricarica il calendario sottostante
     chiudiModal();
     window.renderBookingModal();
+};
+
+window.apriModaleMovimento = async function(itemId, type, itemName) {
+    // type può essere: 'IN_PULITO' (carico), 'OUT_PULITO' (consegna a struttura), 'OUT_SPORCO' (invio lavanderia)
+    const config = {
+        IN_PULITO:  { color: '#10b981', bg: 'rgba(16, 185, 129, 0.1)', title: '📥 Carica Pulito', btn: 'Conferma Carico', desc: 'Registra arrivo di biancheria pulita (fornitore/lavanderia).', symbol: '+', needsRoom: false, placeholder: 'es. Riconsegna lavanderia esterna' },
+        OUT_PULITO: { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.1)', title: '📤 Consegna Pulito a Struttura', btn: 'Conferma Consegna', desc: 'Scarica pulito dal magazzino centrale verso una struttura (fuori da un task).', symbol: '-', needsRoom: true, placeholder: 'es. Rifornimento scorte struttura' },
+        OUT_SPORCO: { color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.1)', title: '🧺 Invia Sporco in Lavanderia', btn: 'Conferma Invio', desc: 'Registra la spedizione dello sporco accumulato alla lavanderia esterna.', symbol: '🚚', needsRoom: false, placeholder: 'es. Ritiro furgone lavanderia XY' },
+    }[type];
+
+    if (!config) { console.error('Tipo movimento sconosciuto:', type); return; }
+
+    // Se consegniamo pulito a una struttura, carichiamo l'elenco delle stanze
+    let roomOptions = '';
+    if (config.needsRoom) {
+        const { data: rooms } = await supabase.from('rooms').select('id, name').order('name');
+        if (rooms) {
+            roomOptions = rooms.map(r => `<option value="${r.id}">${r.name}</option>`).join('');
+        }
+    }
+
+    apriModal(config.title, `
+        <div style="background: ${config.bg}; border: 1px solid ${config.color}; border-radius: 12px; padding: 1rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1rem;">
+            <div style="width: 40px; height: 40px; border-radius: 8px; background: ${config.color}; color: white; display: flex; align-items: center; justify-content: center; font-size: 1.3rem; font-weight: bold;">
+                ${config.symbol}
+            </div>
+            <div>
+                <h3 style="margin: 0; color: #0f172a; font-size: 1.1rem;">${itemName}</h3>
+                <p style="margin: 0; font-size: 0.85rem; color: #64748b;">${config.desc}</p>
+            </div>
+        </div>
+
+        <form onsubmit="salvaMovimento(event, '${itemId}', '${type}')">
+            <div class="form-group" style="margin-bottom: 1.5rem;">
+                <label class="form-label" style="font-weight: 700;">Quantità da movimentare *</label>
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <input type="number" id="form-move-qty" class="form-control" min="1" value="1" style="font-size: 1.5rem; font-weight: 800; text-align: center; width: 100px; height: 60px;" required>
+                    <span style="color: #64748b; font-weight: 600;">Pezzi (Unità)</span>
+                </div>
+            </div>
+
+            ${config.needsRoom ? `
+            <div class="form-group" style="margin-bottom: 1.5rem;">
+                <label class="form-label" style="font-weight: 700;">Destinazione (Appartamento) *</label>
+                <select id="form-move-room" class="form-control" required style="font-size: 1rem;">
+                    <option value="" disabled selected>Seleziona la struttura di destinazione...</option>
+                    ${roomOptions}
+                </select>
+            </div>` : ''}
+
+            <div class="form-group" style="margin-bottom: 1.5rem;">
+                <label class="form-label" style="font-weight: 700;">Causale / Note (Opzionale)</label>
+                <input type="text" id="form-move-notes" class="form-control" placeholder="${config.placeholder}">
+            </div>
+
+            <div class="form-actions" style="margin-top: 2rem; border-top: 1px solid #e2e8f0; padding-top: 1.25rem;">
+                <div class="form-actions-right">
+                    <button type="button" class="btn-secondary" onclick="chiudiModal()">Annulla</button>
+                    <button type="submit" class="btn-primary" style="background: ${config.color}; border: none; font-size: 1rem;">${config.btn}</button>
+                </div>
+            </div>
+        </form>
+    `);
+};
+
+window.salvaMovimento = async function(event, itemId, type) {
+    event.preventDefault();
+    const btnSubmit = event.target.querySelector('button[type="submit"]');
+    btnSubmit.disabled = true;
+    btnSubmit.innerText = 'Registrazione...';
+
+    const qty = parseInt(document.getElementById('form-move-qty').value);
+    const roomId = type === 'OUT_PULITO' ? document.getElementById('form-move-room').value : null;
+    const notes = document.getElementById('form-move-notes').value;
+
+    try {
+        if (type === 'OUT_SPORCO') {
+            // Usa la RPC dedicata: scarica stock_sporco e registra il movimento
+            const { error } = await supabase.rpc('invia_sporco_lavanderia', {
+                p_item_id: itemId,
+                p_qty: qty,
+                p_notes: notes || null
+            });
+            if (error) throw error;
+        } else {
+            const isCarico = type === 'IN_PULITO';
+
+            // 1. Registra nello storico
+            await supabase.from('inventory_movements').insert([{
+                item_id: itemId,
+                quantity: (isCarico ? qty : -qty),
+                movement_type: type,
+                room_id: roomId,
+                notes: notes,
+                source: 'manuale'
+            }]);
+
+            // 2. Aggiorna la giacenza pulita
+            const { data: item } = await supabase.from('catalog_items').select('stock_pulito').eq('id', itemId).single();
+            const newStock = (isCarico ? item.stock_pulito + qty : item.stock_pulito - qty);
+            await supabase.from('catalog_items').update({ stock_pulito: newStock }).eq('id', itemId);
+        }
+
+        chiudiModal();
+        // Ricarica la vista del magazzino per aggiornare i LED e i contatori
+        changeView('magazzino');
+    } catch (error) {
+        console.error("Errore movimento:", error);
+        alert("Errore durante la registrazione del movimento.");
+        btnSubmit.disabled = false;
+        btnSubmit.innerText = 'Riprova';
+    }
+};
+// ==========================================
+// FUNZIONE DI RICERCA IN TEMPO REALE - MAGAZZINO
+// ==========================================
+window.filtraMagazzino = function(searchTerm) {
+    const term = searchTerm.toLowerCase().trim();
+    const shelves = document.querySelectorAll('.shelf-row');
+
+    shelves.forEach(shelf => {
+        let hasVisibleItems = false;
+        // Seleziona tutti i cubi articolo all'interno di questo scaffale
+        const items = shelf.querySelectorAll('.item-cube');
+        
+        items.forEach(item => {
+            // Cerca il nome dell'articolo (dentro il tag h4)
+            const itemName = item.querySelector('h4').textContent.toLowerCase();
+            
+            if (itemName.includes(term)) {
+                item.style.display = 'flex'; // Ripristina la visibilità (usa flex per mantenere il layout interno del cubo)
+                hasVisibleItems = true;
+            } else {
+                item.style.display = 'none'; // Nasconde l'articolo
+            }
+        });
+
+        // Se lo scaffale non ha nessun articolo visibile, nascondi l'intera riga del settore
+        shelf.style.display = hasVisibleItems ? 'block' : 'none';
+    });
 };

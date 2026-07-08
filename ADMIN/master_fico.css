@@ -24,8 +24,13 @@
    RESET E BASE
 ========================================= */
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: var(--font-family); background-color: var(--bg-app); color: var(--primary-color); display: flex; height: 100vh; overflow: hidden; -webkit-font-smoothing: antialiased; }
 
+body { font-family: var(--font-family); background-color: var(--bg-app); color: var(--primary-color); display: flex; height: 100vh; overflow: hidden; -webkit-font-smoothing: antialiased; }
+body {
+    height: 100vh; /* Fallback */
+    height: 100dvh; /* Dynamic Viewport Height (risolve il problema su Mac/iPad) */
+    /* ... resto del tuo css ... */
+}
 /* =========================================
    LAYOUT STRUTTURALE
 ========================================= */
