@@ -1166,16 +1166,92 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
             viewContainer.innerHTML = taskHtml;
             break;
             
-        case 'rooms':
+case 'rooms': {
             if (pageTitle) pageTitle.textContent = 'Gestione Strutture';
             viewContainer.innerHTML = `<p style="color: #64748b;">Caricamento dati dal database in corso...</p>`;
             
+            // Definiamo i limiti del mese corrente per il calcolo dei PAX e dei Task
+            const nowRooms = new Date();
+            const firstDayMonthRooms = new Date(nowRooms.getFullYear(), nowRooms.getMonth(), 1).toISOString().split('T')[0];
+            const lastDayMonthRooms = new Date(nowRooms.getFullYear(), nowRooms.getMonth() + 1, 0).toISOString().split('T')[0];
+
+            // 1. Recupero Stanze
             const { data: ownersData, error: ownersError } = await supabase
                 .from('owners')
                 .select(`*, rooms (*, room_task_pricing(*))`)
                 .order('created_at', { ascending: false });
 
+            // 2. Recupero Prenotazioni (per i Pax Mensili)
+            const { data: activeBookings, error: bookingsError } = await supabase
+                .from('bookings')
+                .select('room_id, pax')
+                .lte('check_in_date', lastDayMonthRooms)
+                .gte('check_out_date', firstDayMonthRooms);
+
+            // 3. Recupero Tipologie Task (per creare le colonne dinamiche)
+            const { data: taskTypesData, error: taskTypesError } = await supabase
+                .from('task_types')
+                .select('*')
+                .order('name');
+                
+            // 4. Recupero tutti i Task COMPLETATI ('done') nel mese corrente per i contatori
+            const { data: monthlyTasks, error: tasksError } = await supabase
+                .from('tasks')
+                .select('room_id, task_type')
+                .eq('status', 'done')
+                .lte('task_date', lastDayMonthRooms)
+                .gte('task_date', firstDayMonthRooms);
+
             if (ownersError) { viewContainer.innerHTML = `<p style="color:#ef4444;">Errore caricamento database.</p>`; return; }
+
+            // === COSTRUZIONE INTESTAZIONI DINAMICHE DEI TASK ===
+            let dynamicTaskHeaders = '';
+            let dynamicColCount = 0;
+            if (taskTypesData && taskTypesData.length > 0) {
+                dynamicColCount = taskTypesData.length;
+                taskTypesData.forEach(type => {
+                    dynamicTaskHeaders += `<th style="text-align: center; padding: 0.6rem 1rem; white-space: nowrap; color: #4f46e5; background: #e0e7ff;">${type.name}</th>`;
+                });
+            }
+
+            // === MODALE VISUALIZZAZIONE CHIAVI E CODICI ===
+            window.apriModaleChiavi = function(roomName, doorCode, lockboxCode, buildingCode) {
+                
+                const formatCode = (code) => code ? `<code style="background: #f1f5f9; padding: 4px 8px; border-radius: 6px; font-weight: bold; font-family: monospace; color: #0f172a; border: 1px solid #cbd5e1; font-size: 1rem;">${code}</code>` : `<span style="color:#64748b; font-style:italic; font-size:0.9rem;">Chiave Fisica</span>`;
+
+                const portaDisplay = formatCode(doorCode);
+                const lucchettoDisplay = formatCode(lockboxCode);
+                const portoneDisplay = formatCode(buildingCode);
+
+                window.apriModal(`Chiavi e Accessi — ${roomName}`, `
+                    <div style="display: flex; flex-direction: column; gap: 1rem; margin-top: 0.5rem;">
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 1.2rem; border-radius: 10px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <strong style="display: block; color: #475569; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.2rem;">🏢 Lucchetto Portone</strong>
+                                <span style="font-size: 0.85rem; color: #64748b;">Codice per l'accesso al portone su strada / cancello</span>
+                            </div>
+                            <div>${portoneDisplay}</div>
+                        </div>
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 1.2rem; border-radius: 10px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <strong style="display: block; color: #475569; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.2rem;">🚪 Codice Tastierino Porta</strong>
+                                <span style="font-size: 0.85rem; color: #64748b;">Codice per l'ingresso self check-in degli ospiti</span>
+                            </div>
+                            <div>${portaDisplay}</div>
+                        </div>
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 1.2rem; border-radius: 10px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <strong style="display: block; color: #475569; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.2rem;">🔐 Lucchetto Scorte (Lockbox)</strong>
+                                <span style="font-size: 0.85rem; color: #64748b;">Codice cassetta di sicurezza per scorte/chiavi riserva</span>
+                            </div>
+                            <div>${lucchettoDisplay}</div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 1.75rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; text-align: right;">
+                        <button type="button" class="btn-secondary" onclick="chiudiModal()" style="padding: 0.5rem 1.2rem; border-radius: 6px; cursor: pointer;">Chiudi</button>
+                    </div>
+                `);
+            };
 
             let htmlContent = `
                 <div class="registry-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
@@ -1190,30 +1266,22 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                 let roomsHtml = '';
                 if (owner.rooms && owner.rooms.length > 0) {
                     owner.rooms.forEach(room => {
-                        const portaDisplay = room.door_code ? `<code style="background: #f1f5f9; padding: 2px 6px; border-radius: 4px;">${room.door_code}</code>` : `${iconaChiave} <span style="font-size:0.75rem; color:#64748b;">Fisica</span>`;
-                        const lucchettoDisplay = room.lockbox_code ? `<code style="background: #f1f5f9; padding: 2px 6px; border-radius: 4px;">${room.lockbox_code}</code>` : `${iconaChiave} <span style="font-size:0.75rem; color:#64748b;">Fisica</span>`;
                         const safeRoomName = (room.name || '').replace(/'/g, "\\'");
+                        const safeDoorCode = (room.door_code || '').replace(/'/g, "\\'");
+                        const safeLockboxCode = (room.lockbox_code || '').replace(/'/g, "\\'");
+                        const safeBuildingCode = (room.building_code || '').replace(/'/g, "\\'");
 
-                        // === NUOVA LOGICA COLONNA PREZZI B2B ===
+                        // === LISTINO PREZZI B2B ===
                         let prezziB2BHtml = '<div style="font-size:0.75rem; color:#64748b; line-height:1.4;">';
-                        
                         const rBillingMode = room.billing_mode || 'inherit';
                         const effectiveMode = rBillingMode === 'inherit' ? (owner.default_billing_mode || 'task') : rBillingMode;
-                        
-                        // Badge che indica da dove arriva la regola
-                        const originBadge = rBillingMode === 'inherit' 
-                           
-                        
-                        prezziB2BHtml += originBadge + '<br>';
+                        prezziB2BHtml += '<br>';
 
                         if (effectiveMode === 'pax') {
-                            // MOSTRA LA TARIFFA A PERSONA
                             const effectivePaxPrice = rBillingMode === 'pax' ? (room.custom_pax_price || 0) : (owner.default_pax_price || 0);
                             prezziB2BHtml += `<span style="color:#10b981; font-weight:800; font-size:0.8rem;">👤 A PERSONA </span><br>`;
                             prezziB2BHtml += `Tariffa: <b style="color:#0f172a; font-size:0.85rem;">€${parseFloat(effectivePaxPrice).toFixed(2)}</b> / ospite<br>`;
-                            prezziB2BHtml += `<span style="font-size:0.65rem; color:#94a3b8; font-style:italic; margin-top:4px; display:inline-block;"></span>`;
                         } else {
-                            // MOSTRA IL LISTINO STANDARD A INTERVENTO
                             prezziB2BHtml += `<span style="color:#3b82f6; font-weight:800; font-size:0.8rem;">🧹 A INTERVENTO </span><br>`;
                             if (room.room_task_pricing && room.room_task_pricing.length > 0) {
                                 prezziB2BHtml += room.room_task_pricing.map(p => {
@@ -1223,29 +1291,52 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                                 prezziB2BHtml += '<span style="color:#ef4444; font-style:italic;">Nessun listino configurato</span>';
                             }
                         }
-                        prezziB2BHtml += '</div>';
+                        prezziB2BHtml += '</div>';  
+                                // === CALCOLO DINAMICO PAX MENSILI ===
+                        const roomBookings = activeBookings ? activeBookings.filter(b => b.room_id === room.id) : [];
+                        const calculatedMonthlyPax = roomBookings.reduce((sum, b) => sum + (parseInt(b.pax) || 0), 0);
+
+                        // === CALCOLO DINAMICO CELLE DEI TASK ===
+                        let dynamicTaskCells = '';
+                        if (taskTypesData && taskTypesData.length > 0) {
+                            taskTypesData.forEach(type => {
+                                const count = monthlyTasks ? monthlyTasks.filter(t => t.room_id === room.id && t.task_type === type.name).length : 0;
+                                const badgeStyle = count > 0 
+                                    ? 'background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;' 
+                                    : 'background: #f8fafc; border: 1px solid #f1f5f9; color: #cbd5e1; opacity: 0.7;';
+
+                                dynamicTaskCells += `
+                                    <td style="text-align: center; padding: 0.75rem 1rem;">
+                                        <span style="display: inline-block; font-weight: 700; padding: 0.2rem 0.7rem; border-radius: 6px; font-size: 0.85rem; ${badgeStyle}" title="${count} ${type.name} eseguiti nel mese">${count}</span>
+                                    </td>
+                                `;
+                            });
+                        }
 
                         roomsHtml += `
                             <tr style="border-bottom: 1px solid #f1f5f9; transition: background-color 0.15s;" onmouseover="this.style.backgroundColor='#f8fafc'" onmouseout="this.style.backgroundColor='transparent'">
                                 
-                                <!-- NOME STANZA CLICCABILE CHE APRE IL PLANNING -->
-                                <td style="padding: 0.75rem 1rem; cursor: pointer;" onclick="apriCalendarioCamera('${room.id}', '${safeRoomName}')" title="Clicca per gestire le Prenotazioni">
-                                    <strong style="color: #3b82f6; font-size: 0.95rem; display: flex; align-items: center; gap: 0.4rem; transition: color 0.2s;" onmouseover="this.style.color='#1d4ed8'" onmouseout="this.style.color='#3b82f6'">
-                                        📅 ${room.name}
-                                    </strong>
+                                <td style="padding: 0.75rem 1rem; border-right: 1px solid #f1f5f9;">
+                                    <div style="display: flex; align-items: center; gap: 0.6rem;">
+                                        <strong style="color: #3b82f6; font-size: 0.95rem; display: flex; align-items: center; gap: 0.4rem; transition: color 0.2s; cursor: pointer;" onclick="apriCalendarioCamera('${room.id}', '${safeRoomName}')" title="Clicca per gestire le Prenotazioni" onmouseover="this.style.color='#1d4ed8'" onmouseout="this.style.color='#3b82f6'">
+                                            📅 ${room.name}
+                                        </strong>
+                                        <button type="button" style="background: #f1f5f9; border: 1px solid #cbd5e1; padding: 4px 6px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;" onmouseover="this.style.background='#e2e8f0'" onmouseout="this.style.background='#f1f5f9'" onclick="event.stopPropagation(); window.apriModaleChiavi('${safeRoomName}', '${safeDoorCode}', '${safeLockboxCode}', '${safeBuildingCode}')" title="Visualizza Chiavi e Codici di Accesso">
+                                            ${iconaChiave}
+                                        </button>
+                                    </div>
                                     <small style="color: #64748b; font-size: 0.75rem; margin-top: 0.2rem; display: inline-block;">${room.address ? room.address + ' - ' : ''}${room.city || ''}</small>
                                 </td>
 
-                                <td style="text-align: center; padding: 0.75rem 1rem;">${portaDisplay}</td>
-                                <td style="text-align: center; padding: 0.75rem 1rem;">${lucchettoDisplay}</td>
                                 <td style="text-align: left; padding: 0.75rem 1rem;">${prezziB2BHtml}</td>
-                                <td style="text-align: center; padding: 0.75rem 1rem;">
-                                    <span class="counter-badge" style="cursor:pointer; display: inline-block; background: #f1f5f9; border: 1px solid #e2e8f0; color: #0f172a; font-weight: 600; padding: 0.15rem 0.6rem; border-radius: 9999px; font-size: 0.8rem;" onclick="modificaContatore(this, '${room.id}', 'monthly_pax', ${room.monthly_pax})">${room.monthly_pax}</span>
+                                
+                                <td style="text-align: center; padding: 0.75rem 1rem; border-right: 1px solid #e2e8f0;">
+                                    <span class="counter-badge" style="cursor:help; display: inline-block; background: #e0e7ff; border: 1px solid #c7d2fe; color: #4338ca; font-weight: 700; padding: 0.15rem 0.6rem; border-radius: 9999px; font-size: 0.8rem;" title="Calcolato automaticamente dal planning del mese corrente">${calculatedMonthlyPax}</span>
                                 </td>
-                                <td style="text-align: center; padding: 0.75rem 1rem;">
-                                    <span class="counter-badge" style="cursor:pointer; display: inline-block; background: #f1f5f9; border: 1px solid #e2e8f0; color: #0f172a; font-weight: 600; padding: 0.15rem 0.6rem; border-radius: 9999px; font-size: 0.8rem;" onclick="modificaContatore(this, '${room.id}', 'paid_checkins', ${room.paid_checkins})">${room.paid_checkins}</span>
-                                </td>
-                                <td style="padding: 0.75rem 1rem; width: 120px;">
+                                
+                                ${dynamicTaskCells}
+
+                                <td style="padding: 0.75rem 1rem; width: 120px; border-left: 1px solid #e2e8f0;">
                                     <div style="display: flex; gap: 0.75rem; align-items: center; justify-content: flex-end;">
                                         <button class="btn-text" style="color: #4f46e5; padding: 4px; background: none; border: none; cursor: pointer; display: flex; align-items: center;" onclick="apriMagazzinoCamera('${room.id}', '${safeRoomName}')" title="Visualizza Magazzino">${iconaMagazzino}</button>
                                         <button class="btn-text" style="color: #64748b; font-weight: 500; font-size: 0.8rem; background: none; border: none; cursor: pointer;" onclick="changeView('edit-room', '${room.id}')">Modifica</button>
@@ -1255,7 +1346,8 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                         `;
                     });
                 } else {
-                    roomsHtml = `<tr><td colspan="7" style="text-align:center; padding: 2rem; color: #94a3b8; font-size: 0.85rem; font-style: italic;">Nessuna struttura o camera registrata per questa società.</td></tr>`;
+                    const emptyColspan = 3 + dynamicColCount;
+                    roomsHtml = `<tr><td colspan="${emptyColspan}" style="text-align:center; padding: 2rem; color: #94a3b8; font-size: 0.85rem; font-style: italic;">Nessuna struttura o camera registrata per questa società.</td></tr>`;
                 }
 
                 const refName = (owner.contact_first_name || owner.contact_last_name) ? `${owner.contact_first_name || ''} ${owner.contact_last_name || ''}`.trim() : 'N/A';
@@ -1282,12 +1374,10 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                                 <thead>
                                     <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-weight: 600; background: #f8fafc;">
                                         <th style="padding: 0.6rem 1rem;">Struttura / Indirizzo</th>
-                                        <th style="text-align: center; padding: 0.6rem 1rem;">Codice Porta</th>
-                                        <th style="text-align: center; padding: 0.6rem 1rem;">Lucchetto Scorte</th>
                                         <th style="text-align: left; padding: 0.6rem 1rem;">Listino Prezzi</th>
-                                        <th style="text-align: center; padding: 0.6rem 1rem;">Pax Mensili</th>
-                                        <th style="text-align: center; padding: 0.6rem 1rem;">Check-in Pag.</th>
-                                        <th style="text-align: right; padding: 0.6rem 1rem;">Azioni</th>
+                                        <th style="text-align: center; padding: 0.6rem 1rem; border-right: 1px solid #e2e8f0;">Pax Mensili</th>
+                                        ${dynamicTaskHeaders}
+                                        <th style="text-align: right; padding: 0.6rem 1rem; border-left: 1px solid #e2e8f0;">Azioni</th>
                                     </tr>
                                 </thead>
                                 <tbody>${roomsHtml}</tbody>
@@ -1298,7 +1388,7 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
             });
             viewContainer.innerHTML = htmlContent;
             break;
-
+        }
         case 'staff': {
             if (pageTitle) pageTitle.textContent = 'Gestione Staff (Operatori)';
             viewContainer.innerHTML = `<p style="color: #64748b;">Caricamento staff...</p>`;
@@ -2216,8 +2306,7 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                 </form>
             `);
             break;
-
-        case 'add-room':
+case 'add-room':
             apriModal(`Nuova Struttura per: ${param2}`, `<p style="color:#64748b;">Caricamento tipologie attività e listini in corso...</p>`);
             
             const { data: taskTypesForAdd } = await supabase.from('task_types').select('*').order('name');
@@ -2255,8 +2344,9 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                     
                     <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Accessi e Sicurezza</h3>
                     <div class="form-row">
-                        <div class="form-group"><label class="form-label">Tastierino Porta (Codice)</label><input type="text" id="form-door-code" class="form-control" placeholder="Nessun codice = Chiave"></div>
-                        <div class="form-group"><label class="form-label">Lucchetto Scorte (Codice)</label><input type="text" id="form-lockbox-code" class="form-control" placeholder="Nessun codice = Chiave"></div>
+                        <div class="form-group"><label class="form-label">Lucchetto Portone</label><input type="text" id="form-building-code" class="form-control" placeholder="Nessun codice = Chiave"></div>
+                        <div class="form-group"><label class="form-label">Tastierino Porta</label><input type="text" id="form-door-code" class="form-control" placeholder="Nessun codice = Chiave"></div>
+                        <div class="form-group"><label class="form-label">Lucchetto Scorte</label><input type="text" id="form-lockbox-code" class="form-control" placeholder="Nessun codice = Chiave"></div>
                     </div>
 
                     <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Deroga Fatturazione Appartamento</h3>
@@ -2288,14 +2378,12 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                 </form>
             `);
             break;
-
-        case 'edit-room':
+            case 'edit-room':
             apriModal('Modifica Struttura e Accessi', `<p>Recupero configurazione camera e listini...</p>`);
             
             const { data: roomData } = await supabase.from('rooms').select('*, room_task_pricing(*)').eq('id', param1).single();
             const { data: taskTypesForEdit } = await supabase.from('task_types').select('*').order('name');
             
-            // Logica visualizzazione dati fatturazione
             const rBillMode = roomData.billing_mode || 'inherit';
             const rPaxDisplay = rBillMode === 'pax' ? 'block' : 'none';
             const rPaxPrice = roomData.custom_pax_price || '0.00';
@@ -2336,8 +2424,9 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                     
                     <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Accessi e Sicurezza</h3>
                     <div class="form-row">
-                        <div class="form-group"><label class="form-label">Tastierino Porta (Codice)</label><input type="text" id="form-door-code" class="form-control" value="${roomData.door_code || ''}"></div>
-                        <div class="form-group"><label class="form-label">Lucchetto Scorte (Codice)</label><input type="text" id="form-lockbox-code" class="form-control" value="${roomData.lockbox_code || ''}"></div>
+                        <div class="form-group"><label class="form-label">Lucchetto Portone</label><input type="text" id="form-building-code" class="form-control" placeholder="Nessun codice = Chiave" value="${roomData.building_code || ''}"></div>
+                        <div class="form-group"><label class="form-label">Tastierino Porta</label><input type="text" id="form-door-code" class="form-control" placeholder="Nessun codice = Chiave" value="${roomData.door_code || ''}"></div>
+                        <div class="form-group"><label class="form-label">Lucchetto Scorte</label><input type="text" id="form-lockbox-code" class="form-control" placeholder="Nessun codice = Chiave" value="${roomData.lockbox_code || ''}"></div>
                     </div>
 
                     <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Deroga Fatturazione Appartamento</h3>
@@ -2371,7 +2460,11 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
             `);
             break;
 
-        case 'add-booking':
+case 'add-booking': {
+            // Recuperiamo la data se arriviamo dal click sul calendario
+            const prefillDate = window.prefillBookingDate || '';
+            window.prefillBookingDate = null; // Resettiamo per le volte successive
+
             apriModal(`Nuova Prenotazione: ${param2}`, `
                 <form onsubmit="salvaPrenotazione(event, '${param1}', '${param2.replace(/'/g, "\\'")}')">
                     <div class="form-row">
@@ -2379,7 +2472,7 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                         <div class="form-group"><label class="form-label">Numero Ospiti (Pax) *</label><input type="number" id="form-book-pax" class="form-control" value="2" min="1" required></div>
                     </div>
                     <div class="form-row">
-                        <div class="form-group"><label class="form-label">Data Check-in *</label><input type="date" id="form-book-in-date" class="form-control" required></div>
+                        <div class="form-group"><label class="form-label">Data Check-in *</label><input type="date" id="form-book-in-date" class="form-control" value="${prefillDate}" required></div>
                         <div class="form-group"><label class="form-label">Ora Prevista Arrivo</label><input type="time" id="form-book-in-time" class="form-control"></div>
                     </div>
                     <div class="form-row">
@@ -2408,6 +2501,7 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                 </form>
             `);
             break;  
+        }
             
             case 'edit-booking':
             apriModal('Modifica Prenotazione', `<p style="color:#64748b;">Caricamento dettagli...</p>`);
@@ -2713,7 +2807,8 @@ function getRoomPayload(ownerId = null) {
         city: document.getElementById('form-room-city').value, 
         province: document.getElementById('form-room-province').value, 
         address: document.getElementById('form-room-address').value, 
-        zip_code: document.getElementById('form-room-zip').value, 
+        zip_code: document.getElementById('form-room-zip').value,
+        building_code: document.getElementById('form-building-code').value, 
         door_code: document.getElementById('form-door-code').value, 
         lockbox_code: document.getElementById('form-lockbox-code').value,
         // NUOVI CAMPI FATTURAZIONE
@@ -3542,6 +3637,11 @@ window.cambiaVistaPlanner = function(mode) {
     window.bookingViewMode = mode;
     window.renderBookingModal();
 };
+// Aggiungiamo questa nuova funzione di appoggio per il click
+window.apriNuovaPrenotazioneDaCalendario = function(roomId, roomName, dateStr) {
+    window.prefillBookingDate = dateStr;
+    changeView('add-booking', roomId, roomName);
+};
 
 window.renderBookingModal = async function() {
     const modalContainer = document.getElementById('modal-container');
@@ -3550,20 +3650,16 @@ window.renderBookingModal = async function() {
     const roomId = window.currentBookingRoom.id;
     const roomName = window.currentBookingRoom.name;
 
-    // Mostra caricamento mantenendo la modale aperta se già c'è
     if (!document.getElementById('calendario-modal')) {
         modalContainer.innerHTML = `<div class="modal-overlay active" onclick="chiudiModale(event)"><div class="modal-content" onclick="event.stopPropagation()"><p style="text-align:center;">Caricamento planning in corso...</p></div></div>`;
     }
 
-    // Determina il mese da visualizzare
     const year = window.bookingPlannerDate.getFullYear();
     const month = window.bookingPlannerDate.getMonth();
     
-    // Primo e ultimo giorno del mese visualizzato
     const firstDayOfMonth = new Date(year, month, 1);
     const lastDayOfMonth = new Date(year, month + 1, 0);
     
-    // Per sicurezza peschiamo le prenotazioni che si accavallano con questo mese
     const startDateStr = firstDayOfMonth.toISOString().split('T')[0];
     const endDateStr = lastDayOfMonth.toISOString().split('T')[0];
 
@@ -3582,9 +3678,6 @@ window.renderBookingModal = async function() {
     let contentHtml = '';
 
     if (window.bookingViewMode === 'list') {
-        // ==========================
-        // VISTA A LISTA
-        // ==========================
         let rows = '';
         if (bookings && bookings.length > 0) {
             rows = bookings.map(b => {
@@ -3624,9 +3717,6 @@ window.renderBookingModal = async function() {
             </div>
         `;
     } else {
-        // ==========================
-        // VISTA PLANNER (LUXURY BOUTIQUE - COMPACT)
-        // ==========================
         let startingDay = firstDayOfMonth.getDay(); 
         startingDay = startingDay === 0 ? 6 : startingDay - 1; 
         
@@ -3639,31 +3729,18 @@ window.renderBookingModal = async function() {
                 .luxury-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-top: 1px solid #e5e5e5; border-left: 1px solid #e5e5e5; }
                 
                 .luxury-header { 
-                    padding: 0.5rem 0; 
-                    text-align: center; 
-                    font-weight: 600; 
-                    font-size: 0.65rem; 
-                    color: #000000; 
-                    text-transform: uppercase; 
-                    letter-spacing: 0.1em; 
-                    border-bottom: 1px solid #e5e5e5; 
-                    border-right: 1px solid #e5e5e5; 
+                    padding: 0.5rem 0; text-align: center; font-weight: 600; font-size: 0.65rem; 
+                    color: #000000; text-transform: uppercase; letter-spacing: 0.1em; 
+                    border-bottom: 1px solid #e5e5e5; border-right: 1px solid #e5e5e5; 
                 }
                 
                 .luxury-cell { 
-                    min-height: 85px; 
-                    padding: 0.4rem; 
-                    border-bottom: 1px solid #e5e5e5; 
-                    border-right: 1px solid #e5e5e5; 
-                    background: #ffffff; 
-                    transition: background 0.3s ease;
-                    position: relative;
-                    display: flex;
-                    flex-direction: column;
-                    gap: 3px;
-                    overflow: hidden;
+                    min-height: 85px; padding: 0.4rem; border-bottom: 1px solid #e5e5e5; 
+                    border-right: 1px solid #e5e5e5; background: #ffffff; transition: background 0.3s ease;
+                    position: relative; display: flex; flex-direction: column; gap: 3px; overflow: hidden;
+                    cursor: pointer; /* Aggiunto cursore cliccabile sull'intera cella */
                 }
-                .luxury-cell:hover { background: #f9f9f9; }
+                .luxury-cell:hover { background: #f0fdf4; /* Verde leggerissimo al passaggio del mouse per invitare al click */ }
                 
                 .luxury-cell.is-past { background: #fcfcfc; }
                 .luxury-cell.is-past .luxury-day { color: #a3a3a3; }
@@ -3672,21 +3749,16 @@ window.renderBookingModal = async function() {
                     content: ''; position: absolute; top: 0.6rem; right: 0.6rem; width: 5px; height: 5px; background: #000000; border-radius: 50%;
                 }
 
-                .luxury-day { 
-                    font-size: 0.8rem; font-weight: 400; color: #000000; font-family: "Times New Roman", Times, serif; font-style: italic; margin-bottom: 4px; text-align: left;
-                }
+                .luxury-day { font-size: 0.8rem; font-weight: 400; color: #000000; font-family: "Times New Roman", Times, serif; font-style: italic; margin-bottom: 4px; text-align: left; }
 
                 .luxury-event { 
-                    border-left: 2px solid #000000; 
-                    padding-left: 6px; 
-                    cursor: pointer; 
-                    transition: opacity 0.2s;
+                    border-left: 2px solid #000000; padding-left: 6px; cursor: pointer; transition: opacity 0.2s;
                 }
                 .luxury-event:hover { opacity: 0.5; }
                 
-                .event-in { border-left-color: #10b981; } /* Verde per Check-in */
-                .event-out { border-left-color: #ef4444; } /* Rosso per Check-out */
-                .event-stay { border-left-color: #3b82f6; } /* Azzurro intenso per il soggiorno */
+                .event-in { border-left-color: #10b981; } 
+                .event-out { border-left-color: #ef4444; } 
+                .event-stay { border-left-color: #3b82f6; } 
 
                 .luxury-event-title { 
                     font-size: 0.65rem; font-weight: 600; color: #000000; text-transform: uppercase; letter-spacing: 0.05em; 
@@ -3720,21 +3792,22 @@ window.renderBookingModal = async function() {
                 const safeId = b.id; 
                 const safeRoomId = b.room_id;
                 
+                // NOTA: Aggiunto event.stopPropagation() per far sì che cliccando la prenotazione si apra SOLO la modifica, e non venga cliccata la cella dietro!
                 if (currentDateStr === b.check_in_date) {
                     bookingsInDay += `
-                        <div class="luxury-event event-in" onclick="changeView('edit-booking', '${safeId}', '${safeRoomId}')" title="${b.guest_name} - ${b.pax} Ospiti">
+                        <div class="luxury-event event-in" onclick="event.stopPropagation(); changeView('edit-booking', '${safeId}', '${safeRoomId}')" title="${b.guest_name} - ${b.pax} Ospiti">
                             <span class="luxury-event-title">IN: ${b.guest_name}</span>
                             <span class="luxury-event-meta">${b.pax} Ospiti</span>
                         </div>`;
                 } else if (currentDateStr > b.check_in_date && currentDateStr < b.check_out_date) {
                     bookingsInDay += `
-                        <div class="luxury-event event-stay" onclick="changeView('edit-booking', '${safeId}', '${safeRoomId}')" title="${b.guest_name} - ${b.pax} Ospiti">
+                        <div class="luxury-event event-stay" onclick="event.stopPropagation(); changeView('edit-booking', '${safeId}', '${safeRoomId}')" title="${b.guest_name} - ${b.pax} Ospiti">
                             <span class="luxury-event-title">${b.guest_name}</span>
                             <span class="luxury-event-meta">${b.pax} Ospiti</span>
                         </div>`;
                 } else if (currentDateStr === b.check_out_date) {
                     bookingsInDay += `
-                        <div class="luxury-event event-out" onclick="changeView('edit-booking', '${safeId}', '${safeRoomId}')" title="${b.guest_name} - ${b.pax} Ospiti">
+                        <div class="luxury-event event-out" onclick="event.stopPropagation(); changeView('edit-booking', '${safeId}', '${safeRoomId}')" title="${b.guest_name} - ${b.pax} Ospiti">
                             <span class="luxury-event-title">OUT: ${b.guest_name}</span>
                             <span class="luxury-event-meta">${b.pax} Ospiti</span>
                         </div>`;
@@ -3745,8 +3818,9 @@ window.renderBookingModal = async function() {
             if (isPast) cellClass += ' is-past';
             if (isToday) cellClass += ' is-today';
 
+            // Abbiamo aggiunto l'onclick sull'intera cella!
             contentHtml += `
-                <div class="${cellClass}">
+                <div class="${cellClass}" onclick="window.apriNuovaPrenotazioneDaCalendario('${roomId}', '${roomName.replace(/'/g, "\\'")}', '${currentDateStr}')" title="Clicca per aggiungere una prenotazione in data ${new Date(currentDateStr).toLocaleDateString('it-IT')}">
                     <div class="luxury-day">${day}</div>
                     ${bookingsInDay}
                 </div>
@@ -3755,7 +3829,6 @@ window.renderBookingModal = async function() {
         contentHtml += `</div></div>`;
     }
 
-    // Costruisce l'intera finestra modale e la inietta
     modalContainer.innerHTML = `
         <div class="modal-overlay active" id="calendario-modal" onclick="chiudiModale(event)">
             <div class="modal-content" onclick="event.stopPropagation()" style="max-width: 900px;">
@@ -3838,7 +3911,7 @@ window.salvaPrenotazione = async function(event, roomId, roomName) {
         const taskPayload = {
             room_id: roomId,
             task_date: outDate, // La pulizia si incastra perfettamente il giorno del check-out
-            task_type: 'Check-out', 
+            task_type: 'CHECK-OUT', 
             notes: taskNotes,
             status: 'pending' // Segna il task come da fare
         };
@@ -3873,7 +3946,7 @@ window.eliminaPrenotazione = async function(bookingId, roomId, checkOutDate) {
         .delete()
         .eq('room_id', roomId)
         .eq('task_date', checkOutDate)
-        .eq('task_type', 'Check-out')
+        .eq('task_type', 'CHECK-OUT')
         .eq('status', 'pending');
 
     if (taskError) {
