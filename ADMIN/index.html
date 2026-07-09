@@ -172,5 +172,18 @@
     <div id="modal-container"></div>
     
     <script type="module" src="functions/index.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js')
+                .then(registration => {
+                    console.log('Service Worker registrato con successo. Scope:', registration.scope);
+                })
+                .catch(error => {
+                    console.error('Errore nella registrazione del Service Worker:', error);
+                });
+            });
+        }
+    </script>
 </body>
 </html>
