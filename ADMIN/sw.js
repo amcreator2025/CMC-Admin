@@ -7,7 +7,7 @@ const urlsToCache = [
     '/index.html',
     '/master_fico.css',
     '/functions/index.js',
-    '/manifest.json',
+    '/manifest.webmanifest',
     '/assets/images/logo2.png'
 ];
 
