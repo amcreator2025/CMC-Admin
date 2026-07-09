@@ -5,6 +5,10 @@ const CACHE_NAME = 'delapp-cache-v1';
 const urlsToCache = [
     '/',
     '/index.html',
+    '/master_fico.css',
+    '/functions/index.js',
+    '/manifest.webmanifest',
+    '/assets/images/logo2.png'
     
 ];
 
