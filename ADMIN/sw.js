@@ -3,7 +3,9 @@ const CACHE_NAME = 'delapp-cache-v1';
 
 // I file essenziali che permetteranno all'app di caricarsi anche offline
 const urlsToCache = [
-    '/'
+    '/',
+    '/index.html',
+    
 ];
 
 // FASE 1: Installazione (Il Service Worker scarica e salva i file)
