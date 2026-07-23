@@ -105,19 +105,29 @@ function initApp() {
 }
 
 window.changeView = async function(viewName, param1 = null, param2 = null) {
-    const pageTitle = document.getElementById('pageTitle');
+    
+    // 1. RECUPERIAMO IL CONTENITORE (La riga che mancava!)
     const viewContainer = document.getElementById('view-container');
     
-    const modalViews = ['add-task', 'add-staff', 'edit-staff', 'add-room', 'edit-room', 'add-company', 'edit-company', 'add-kit', 'edit-kit', 'add-task-type', 'edit-task-type', 'add-catalog-item', 'edit-catalog-item', 'add-booking', 'edit-booking'];
+    // 2. LA LISTA DELLE MODALI
+    const modalViews = ['add-task', 'add-staff', 'edit-staff', 'add-room', 'edit-room', 'add-company', 'edit-company', 'add-kit', 'edit-kit', 'add-task-type', 'edit-task-type', 'add-catalog-item', 'edit-catalog-item', 'add-booking', 'edit-booking', 'add-expense'];
+    
     const isModal = modalViews.includes(viewName);
+    
+    // 3. ROUTING INTERNO: Gestione apre Analytics di default
+    if (viewName === 'gestione') viewName = 'reports'; 
 
     if (!isModal) {
         chiudiModal();
         AppState.currentView = viewName;
         
         const navLinks = document.querySelectorAll('.nav-links a');
+        
+        // Se mi trovo in una pagina gestionale, tengo evidenziato il tasto "gestione"
+        const targetNav = ['reports', 'billing', 'expenses'].includes(viewName) ? 'gestione' : viewName;
+        
         navLinks.forEach(link => {
-            if (link.getAttribute('data-view') === viewName) {
+            if (link.getAttribute('data-view') === targetNav) {
                 link.classList.add('active');
             } else {
                 link.classList.remove('active');
@@ -346,7 +356,7 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
 
       
        case 'reports': {
-            if (pageTitle) pageTitle.textContent = 'Dashboard Direzionale (Business Intelligence)';
+            if (pageTitle) pageTitle.textContent = 'Business Intelligence & Analytics';
             viewContainer.innerHTML = `<div style="display: flex; justify-content: center; padding: 3rem;"><div class="spinner" style="width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #3b82f6; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>`;
 
             // 1. INIZIALIZZAZIONE VARIABILI GLOBALI DEI FILTRI
@@ -361,7 +371,7 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                 window.reportDateTo = lastDay.toISOString().split('T')[0];
             }
 
-            // Funzione per i preset temporali (Ispirata al tuo analytics.js)
+            // Funzione per i preset temporali
             window.applicaPresetReport = function(preset) {
                 window.reportPreset = preset;
                 const now = new Date();
@@ -405,7 +415,7 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
             };
 
             try {
-                // 2. RECUPERO MASSIVO DEI DATI (Filtrato per data)
+                // 2. RECUPERO MASSIVO DEI DATI
                 const { data: owners } = await supabase.from('owners').select('*, rooms(*, room_task_pricing(*))').order('business_name');
                 const { data: allTasks } = await supabase.from('tasks').select('*, rooms(*), operators(*), task_kit_usage(*, laundry_kits(*))')
                     .eq('status', 'done')
@@ -427,11 +437,14 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                     filteredBookings = filteredBookings.filter(b => ownerRoomIds.includes(b.room_id));
                 }
 
+                // VARIABILI ANALISI
                 let fatturatoLordo = 0;
                 let costiPersonale = 0;
                 let totalePulizieEffettuate = 0;
                 let totalePax = 0;
                 let operatorStats = {};
+                let clientStats = {};
+                let taskTypeStats = {};
 
                 // --- CALCOLO COSTI FISSI ---
                 let warningCostiFissi = '';
@@ -442,15 +455,26 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                         }
                     });
                 } else {
-                    warningCostiFissi = `<div style="margin-top: 0.5rem; font-size: 0.75rem; color: #f59e0b; background: #fef3c7; padding: 0.4rem; border-radius: 4px; border: 1px solid #fcd34d;">⚠️ Costi mensili fissi esclusi (viene conteggiato solo il lavoro a gettone).</div>`;
+                    warningCostiFissi = `<div style="margin-top: 0.75rem; font-size: 0.75rem; color: #b45309; background: #fffbeb; padding: 0.5rem; border-radius: 6px; border: 1px solid #fde68a;">⚠️ Costi mensili fissi esclusi (calcolato solo il lavoro a gettone).</div>`;
                 }
 
-                // 3. CALCOLO FATTURATO E COSTI VARIABILI
+                // 3. CALCOLO FATTURATO, COSTI E AGGREGAZIONI
                 filteredTasks?.forEach(task => {
                     totalePulizieEffettuate++;
                     
                     const taskOwner = owners?.find(o => o.rooms?.some(r => r.id === task.room_id));
                     const room = task.rooms;
+
+                    // Init Statistiche Clienti
+                    if (taskOwner && !clientStats[taskOwner.id]) {
+                        clientStats[taskOwner.id] = { name: taskOwner.business_name, revenue: 0, taskCount: 0 };
+                    }
+                    if (taskOwner) clientStats[taskOwner.id].taskCount++;
+
+                    // Init Statistiche Tipo Task
+                    const tType = task.task_type || 'Generico';
+                    if (!taskTypeStats[tType]) taskTypeStats[tType] = 0;
+                    taskTypeStats[tType]++;
 
                     // --- FATTURATO LORDO ---
                     let ricavoTask = 0;
@@ -479,9 +503,11 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                         ricavoKit += usage.quantity * (usage.laundry_kits?.price_per_unit || 0);
                     });
 
-                    fatturatoLordo += (ricavoTask + ricavoKit);
+                    const totRiga = ricavoTask + ricavoKit;
+                    fatturatoLordo += totRiga;
+                    if (taskOwner) clientStats[taskOwner.id].revenue += totRiga;
 
-                    // --- POPOLA LEADERBOARD OPERATORI E COSTI A GETTONE ---
+                    // --- LEADERBOARD OPERATORI ---
                     const op = task.operators;
                     if (op) {
                         if (!operatorStats[op.id]) {
@@ -498,67 +524,101 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                 });
 
                 filteredBookings?.forEach(b => totalePax += (parseInt(b.pax) || 0));
+                
                 const margineNetto = fatturatoLordo - costiPersonale;
+                const marginePercentuale = fatturatoLordo > 0 ? ((margineNetto / fatturatoLordo) * 100).toFixed(1) : 0;
 
-                // --- GENERAZIONE HTML PILLOLE ---
+                // --- GENERAZIONE UI COMPONENTI ---
                 const pillOwnersHtml = `
-                    <button class="filter-pill ${window.reportFilterOwner === 'all' ? 'active' : ''}" onclick="window.aggiornaFiltroSocietaReport('all')">🌐 Tutte</button>
-                    ${owners.map(o => `<button class="filter-pill ${window.reportFilterOwner === o.id ? 'active' : ''}" onclick="window.aggiornaFiltroSocietaReport('${o.id}')"> ${o.business_name}</button>`).join('')}
+                    <button class="filter-pill ${window.reportFilterOwner === 'all' ? 'active' : ''}" onclick="window.aggiornaFiltroSocietaReport('all')">🌐 Analisi Globale</button>
+                    ${owners.map(o => `<button class="filter-pill ${window.reportFilterOwner === o.id ? 'active' : ''}" onclick="window.aggiornaFiltroSocietaReport('${o.id}')">🏢 ${o.business_name}</button>`).join('')}
                 `;
 
+                // Leaderboard Operatori
                 const leaderboard = Object.values(operatorStats).sort((a, b) => b.tasks - a.tasks);
                 let leaderboardHtml = leaderboard.map((op, index) => `
-                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid #f1f5f9; transition: background 0.2s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 1rem 0; border-bottom: 1px dashed #e2e8f0;">
                         <div style="display: flex; align-items: center; gap: 1rem;">
-                            <div style="width: 36px; height: 36px; border-radius: 50%; background: ${index === 0 ? '#fef3c7' : '#e0e7ff'}; color: ${index === 0 ? '#d97706' : '#4f46e5'}; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.2rem;">
-                                ${index === 0 ? '👑' : op.name.charAt(0).toUpperCase()}
+                            <div style="width: 36px; height: 36px; border-radius: 10px; background: ${index === 0 ? '#fef3c7' : '#f1f5f9'}; color: ${index === 0 ? '#d97706' : '#64748b'}; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.1rem;">
+                                ${index === 0 ? '👑' : index + 1}
                             </div>
-                            <span style="font-weight: 600; color: #0f172a;">${op.name}</span>
+                            <span style="font-weight: 700; color: #0f172a; font-size: 0.95rem;">${op.name}</span>
                         </div>
                         <div style="text-align: right;">
-                            <span style="display: block; font-weight: 800; color: #3b82f6;">${op.tasks} Task</span>
-                            <span style="font-size: 0.75rem; color: #64748b;">Generati: €${op.earnings.toFixed(2)}</span>
+                            <span style="display: block; font-weight: 800; color: #3b82f6; font-size: 1.05rem;">${op.tasks} Task</span>
+                            <span style="font-size: 0.75rem; color: #64748b; font-weight: 500;">Costo: €${op.earnings.toFixed(2)}</span>
                         </div>
                     </div>
-                `).join('') || '<p style="padding: 1.5rem; text-align: center; color: #64748b; font-style: italic;">Nessun task completato in questo periodo.</p>';
+                `).join('') || '<p style="padding: 1rem 0; color: #64748b; font-style: italic; margin: 0; font-size: 0.9rem;">Nessun dato operativo nel periodo.</p>';
 
-                // Formattazione per la UI
+                // Leaderboard Clienti (Top 5)
+                const topClients = Object.values(clientStats).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+                let topClientsHtml = topClients.map((client, index) => {
+                    const percClient = fatturatoLordo > 0 ? ((client.revenue / fatturatoLordo) * 100).toFixed(1) : 0;
+                    return `
+                    <div style="margin-bottom: 1.25rem;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 0.4rem;">
+                            <span style="font-weight: 700; color: #0f172a; font-size: 0.9rem;">${index + 1}. ${client.name}</span>
+                            <span style="font-weight: 800; color: #10b981; font-size: 0.9rem;">€${client.revenue.toFixed(2)}</span>
+                        </div>
+                        <div style="width: 100%; background: #f1f5f9; border-radius: 999px; height: 8px; overflow: hidden;">
+                            <div style="background: #10b981; height: 100%; width: ${percClient}%; border-radius: 999px;"></div>
+                        </div>
+                        <p style="margin: 0.25rem 0 0 0; font-size: 0.7rem; color: #64748b; text-align: right;">${percClient}% del fatturato | ${client.taskCount} interventi</p>
+                    </div>
+                `}).join('') || '<p style="padding: 1rem 0; color: #64748b; font-style: italic; margin: 0; font-size: 0.9rem;">Nessun ricavo nel periodo.</p>';
+
+                // Distribuzione Task (Mini Chart CSS)
+                const colors = ['#3b82f6', '#8b5cf6', '#f59e0b', '#ec4899', '#14b8a6'];
+                let taskDistributionHtml = '';
+                let taskLegendHtml = '';
+                let colorIndex = 0;
+                
+                Object.entries(taskTypeStats).sort((a, b) => b[1] - a[1]).forEach(([type, count]) => {
+                    const perc = ((count / totalePulizieEffettuate) * 100).toFixed(1);
+                    const color = colors[colorIndex % colors.length];
+                    taskDistributionHtml += `<div style="height: 100%; width: ${perc}%; background: ${color};" title="${type}: ${perc}%"></div>`;
+                    taskLegendHtml += `
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px dashed #e2e8f0;">
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <div style="width: 12px; height: 12px; border-radius: 3px; background: ${color};"></div>
+                                <span style="font-size: 0.85rem; font-weight: 600; color: #334155;">${type}</span>
+                            </div>
+                            <div style="text-align: right;">
+                                <span style="font-weight: 800; font-size: 0.9rem; color: #0f172a;">${count}</span>
+                                <span style="font-size: 0.75rem; color: #64748b; margin-left: 0.25rem;">(${perc}%)</span>
+                            </div>
+                        </div>
+                    `;
+                    colorIndex++;
+                });
+
+                if(totalePulizieEffettuate === 0) {
+                    taskDistributionHtml = `<div style="height: 100%; width: 100%; background: #e2e8f0;"></div>`;
+                    taskLegendHtml = '<p style="color: #64748b; font-style: italic; margin: 1rem 0; font-size: 0.9rem;">Nessuna attività registrata.</p>';
+                }
+
+                // Date Formatting
                 const dateFromFmt = new Date(window.reportDateFrom).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: '2-digit' });
                 const dateToFmt = new Date(window.reportDateTo).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: '2-digit' });
 
                 viewContainer.innerHTML = `
                     <style>
-                        .filters-box-premium {
-                            background: #ffffff; border: 1px solid #e2e8f0;
-                            border-radius: 16px; padding: 1.5rem; margin-bottom: 2rem; 
-                            display: flex; flex-direction: column; gap: 1.25rem;
-                            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02);
-                        }
-                        .filter-label-premium {
-                            font-size: 0.75rem; color: #64748b; text-transform: uppercase;
-                            letter-spacing: 0.05em; font-weight: 800; margin-bottom: 8px; display: block;
-                        }
+                        .filters-box-premium { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 1.5rem; margin-bottom: 2rem; display: flex; flex-direction: column; gap: 1.25rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); }
+                        .filter-label-premium { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; margin-bottom: 10px; display: block; }
                         .pill-group-premium { display: flex; flex-wrap: wrap; gap: 8px; }
-                        .filter-pill {
-                            background: #f8fafc; border: 1px solid #e2e8f0;
-                            color: #475569; padding: 8px 16px; border-radius: 20px;
-                            cursor: pointer; font-size: 0.85rem; font-weight: 600; transition: all 0.2s;
-                        }
-                        .filter-pill:hover { background: #f1f5f9; color: #0f172a; border-color: #cbd5e1; }
-                        .filter-pill.active {
-                            background: #3b82f6; color: #ffffff; border-color: #3b82f6;
-                            box-shadow: 0 4px 10px rgba(59, 130, 246, 0.25);
-                        }
-                        .custom-date-container {
-                            display: flex; gap: 10px; align-items: center; flex-wrap: wrap; 
-                            margin-top: 10px; padding: 10px; background: #f8fafc; border-radius: 8px; border: 1px dashed #cbd5e1;
-                        }
+                        .filter-pill { background: #ffffff; border: 1px solid #cbd5e1; color: #475569; padding: 8px 16px; border-radius: 999px; cursor: pointer; font-size: 0.85rem; font-weight: 600; transition: all 0.2s; }
+                        .filter-pill:hover { background: #f8fafc; border-color: #94a3b8; color: #0f172a; }
+                        .filter-pill.active { background: #eff6ff; color: #3b82f6; border-color: #3b82f6; box-shadow: inset 0 0 0 1px #3b82f6; }
+                        .custom-date-container { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; padding: 10px; background: #f8fafc; border-radius: 12px; border: 1px dashed #cbd5e1; }
+                        .kpi-master-card { background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center; }
+                        .kpi-master-value { margin: 0.25rem 0 0 0; font-size: 2.25rem; font-weight: 800; letter-spacing: -1px; }
                     </style>
 
-                    <div class="registry-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem;">
+                    <div class="registry-header web-only-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
                         <div>
-                            <h2 style="margin:0; font-size:1.25rem;">Dashboard Direzionale (BI)</h2>
-                            <p style="margin:0; font-size:0.85rem; color:#64748b;">Analisi di redditività, costi e volumi operativi.</p>
+                            <h2 style="margin:0; font-size:1.5rem; font-weight:800; color:#0f172a; letter-spacing: -0.5px;">Business Intelligence</h2>
+                            <p style="margin:0.2rem 0 0 0; font-size:0.9rem; color:#64748b;">Controllo di gestione, redditività operativa e volumi.</p>
                         </div>
                     </div>
 
@@ -566,79 +626,126 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                     <div class="filters-box-premium">
                         <div>
                             <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <span class="filter-label-premium">Periodo di Analisi: <span style="color: #3b82f6; margin-left: 5px;">${dateFromFmt} - ${dateToFmt}</span></span>
+                                <span class="filter-label-premium">Orizzonte Temporale: <span style="color: #3b82f6; margin-left: 5px; font-weight: 800;">${dateFromFmt} - ${dateToFmt}</span></span>
                             </div>
                             <div class="pill-group-premium">
                                 <button class="filter-pill ${window.reportPreset === 'today' ? 'active' : ''}" onclick="window.applicaPresetReport('today')">Oggi</button>
-                                <button class="filter-pill ${window.reportPreset === '7_days' ? 'active' : ''}" onclick="window.applicaPresetReport('7_days')">7 Giorni</button>
+                                <button class="filter-pill ${window.reportPreset === '7_days' ? 'active' : ''}" onclick="window.applicaPresetReport('7_days')">Ultimi 7 Giorni</button>
                                 <button class="filter-pill ${window.reportPreset === 'this_month' ? 'active' : ''}" onclick="window.applicaPresetReport('this_month')">Questo Mese</button>
                                 <button class="filter-pill ${window.reportPreset === 'last_month' ? 'active' : ''}" onclick="window.applicaPresetReport('last_month')">Mese Scorso</button>
-                                <button class="filter-pill ${window.reportPreset === 'custom' ? 'active' : ''}" onclick="window.applicaPresetReport('custom')">📅 Custom</button>
+                                <button class="filter-pill ${window.reportPreset === 'custom' ? 'active' : ''}" onclick="window.applicaPresetReport('custom')">📅 Date Custom</button>
                             </div>
                             
                             <!-- RIGA DATE CUSTOM -->
                             <div id="custom-date-row" class="custom-date-container" style="display: ${window.reportPreset === 'custom' ? 'flex' : 'none'};">
-                                <input type="date" id="report-from-date" class="form-control" value="${window.reportDateFrom}" style="padding: 0.4rem; border-radius: 6px; border: 1px solid #cbd5e1; outline: none;">
-                                <span style="color:#64748b;">al</span>
-                                <input type="date" id="report-to-date" class="form-control" value="${window.reportDateTo}" style="padding: 0.4rem; border-radius: 6px; border: 1px solid #cbd5e1; outline: none;">
-                                <button class="btn-primary" onclick="window.applicaDateCustomReport()" style="padding: 0.4rem 1rem; border-radius: 6px; border: none; background: #3b82f6; font-weight: 600;">Applica Date</button>
+                                <input type="date" id="report-from-date" class="form-control" value="${window.reportDateFrom}" style="padding: 0.4rem; border-radius: 8px; border: 1px solid #cbd5e1; outline: none; font-family: inherit;">
+                                <span style="color:#64748b; font-weight: 500; font-size: 0.9rem;">al</span>
+                                <input type="date" id="report-to-date" class="form-control" value="${window.reportDateTo}" style="padding: 0.4rem; border-radius: 8px; border: 1px solid #cbd5e1; outline: none; font-family: inherit;">
+                                <button class="btn-primary" onclick="window.applicaDateCustomReport()" style="padding: 0.5rem 1rem; border-radius: 999px; border: none; background: #3b82f6; font-weight: 600; margin-left: auto;">Applica Filtro</button>
                             </div>
                         </div>
                         
-                        <div>
-                            <span class="filter-label-premium">Società (Cliente)</span>
+                        <div style="border-top: 1px dashed #e2e8f0; padding-top: 1.25rem;">
+                            <span class="filter-label-premium">Analisi per Cliente (Società)</span>
                             <div class="pill-group-premium">
                                 ${pillOwnersHtml}
                             </div>
                         </div>
                     </div>
 
-                    <!-- KPI FINANZIARI GLOBALI -->
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.25rem; margin-bottom: 2rem;">
-                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-top: 4px solid #3b82f6;">
-                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Fatturato Lordo (Ricavi)</span>
-                            <h3 style="margin: 0.5rem 0 0 0; font-size: 2rem; font-weight: 800; color: #0f172a;">€ ${fatturatoLordo.toFixed(2)}</h3>
+                    <!-- KPI FINANZIARI EXECUTIVE -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.25rem; margin-bottom: 2rem;">
+                        
+                        <div class="kpi-master-card">
+                            <div style="position: absolute; top: 0; left: 0; right: 0; height: 4px; background: #3b82f6;"></div>
+                            <span style="font-size: 0.8rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; display: flex; justify-content: space-between;">
+                                <span>Fatturato Lordo</span>
+                                <span style="font-size: 1.2rem;">📈</span>
+                            </span>
+                            <h3 class="kpi-master-value" style="color: #0f172a;">€ ${fatturatoLordo.toFixed(2)}</h3>
                         </div>
-                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-top: 4px solid #ef4444;">
-                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Costi Personale (Uscite)</span>
-                            <h3 style="margin: 0.5rem 0 0 0; font-size: 2rem; font-weight: 800; color: #ef4444;">- € ${costiPersonale.toFixed(2)}</h3>
-                            <small style="color: #94a3b8; font-size: 0.75rem;">Variabili in base ai task eseguiti</small>
+
+                        <div class="kpi-master-card">
+                            <div style="position: absolute; top: 0; left: 0; right: 0; height: 4px; background: #ef4444;"></div>
+                            <span style="font-size: 0.8rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; display: flex; justify-content: space-between;">
+                                <span>Costo Manodopera</span>
+                                <span style="font-size: 1.2rem;">📉</span>
+                            </span>
+                            <h3 class="kpi-master-value" style="color: #ef4444;">- € ${costiPersonale.toFixed(2)}</h3>
                             ${warningCostiFissi}
                         </div>
-                        <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); border-radius: 12px; padding: 1.5rem; color: white; box-shadow: 0 10px 15px -3px rgba(16, 185, 129, 0.3);">
-                            <span style="font-size: 0.85rem; font-weight: 700; text-transform: uppercase; opacity: 0.9;">Margine Operativo</span>
-                            <h3 style="margin: 0.5rem 0 0 0; font-size: 2rem; font-weight: 800;">€ ${margineNetto.toFixed(2)}</h3>
-                            <small style="font-size: 0.75rem; opacity: 0.8;">Fatturato - Costi Personale</small>
+
+                        <div class="kpi-master-card" style="background: #f0fdf4; border-color: #bbf7d0;">
+                            <div style="position: absolute; top: 0; left: 0; right: 0; height: 4px; background: #10b981;"></div>
+                            <span style="font-size: 0.8rem; font-weight: 700; color: #166534; text-transform: uppercase; letter-spacing: 0.5px; display: flex; justify-content: space-between;">
+                                <span>Margine Netto</span>
+                                <span style="font-size: 1.2rem;">💶</span>
+                            </span>
+                            <h3 class="kpi-master-value" style="color: #15803d;">€ ${margineNetto.toFixed(2)}</h3>
+                            
+                            <!-- Barra Marginalità (ROI) -->
+                            <div style="margin-top: 1rem;">
+                                <div style="display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: #166534; margin-bottom: 0.25rem;">
+                                    <span>Indice di Profitto (ROI)</span>
+                                    <span>${marginePercentuale}%</span>
+                                </div>
+                                <div style="width: 100%; background: #d1fae5; border-radius: 999px; height: 6px; overflow: hidden;">
+                                    <div style="background: #10b981; height: 100%; width: ${Math.max(0, marginePercentuale)}%; border-radius: 999px;"></div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
-                    <!-- GRIGLIA INFERIORE: OPERATORI E FLUSSI -->
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 1.5rem;">
+                    <!-- ROW 2: DETTAGLI OPERATIVI E COMMERCIALI -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
                         
-                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); overflow: hidden;">
-                            <div style="padding: 1.25rem; border-bottom: 1px solid #f1f5f9; background: #f8fafc;">
-                                <h3 style="margin: 0; font-size: 1.1rem; color: #0f172a;">🏆 Produttività Staff</h3>
+                        <!-- Top Clienti (Fatturato) -->
+                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02);">
+                            <h3 style="margin: 0 0 1.5rem 0; font-size: 1.1rem; color: #0f172a; font-weight: 800; display: flex; align-items: center; gap: 0.5rem;">
+                                🏢 Valore Generato per Cliente
+                            </h3>
+                            <div>${topClientsHtml}</div>
+                        </div>
+
+                        <!-- Distribuzione Tipi di Task -->
+                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02);">
+                            <h3 style="margin: 0 0 1.5rem 0; font-size: 1.1rem; color: #0f172a; font-weight: 800; display: flex; align-items: center; justify-content: space-between;">
+                                <span>📊 Spaccato Operatività</span>
+                                <span style="font-size: 0.8rem; background: #f1f5f9; color: #475569; padding: 0.2rem 0.6rem; border-radius: 999px;">Tot: ${totalePulizieEffettuate}</span>
+                            </h3>
+                            
+                            <!-- Barra Orizzontale Impilata (Stacked Bar) -->
+                            <div style="width: 100%; height: 24px; border-radius: 6px; display: flex; overflow: hidden; margin-bottom: 1.5rem; border: 1px solid #e2e8f0;">
+                                ${taskDistributionHtml}
                             </div>
-                            <div style="max-height: 350px; overflow-y: auto;">
+                            
+                            <div style="max-height: 200px; overflow-y: auto; padding-right: 5px;">
+                                ${taskLegendHtml}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ROW 3: STAFF E VOLUMI -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem;">
+                        
+                        <!-- Rendimento Staff -->
+                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02);">
+                            <h3 style="margin: 0 0 1rem 0; font-size: 1.1rem; color: #0f172a; font-weight: 800; border-bottom: 1px solid #f1f5f9; padding-bottom: 1rem;">
+                                🧑‍💼 Costi e Volumi Staff (Leaderboard)
+                            </h3>
+                            <div style="max-height: 280px; overflow-y: auto; padding-right: 5px;">
                                 ${leaderboardHtml}
                             </div>
                         </div>
 
+                        <!-- Card Volumi Extra -->
                         <div style="display: flex; flex-direction: column; gap: 1.5rem;">
-                            <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02);">
+                            <div style="background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 2rem 1.5rem; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02);">
                                 <div>
-                                    <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase; display: block; margin-bottom: 0.25rem;">Volume Ospiti nel periodo</span>
-                                    <h3 style="margin: 0; font-size: 2rem; font-weight: 800; color: #0f172a;">${totalePax} <span style="font-size: 1rem; color: #94a3b8; font-weight: 600;">Pax transitati</span></h3>
+                                    <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase; display: block; margin-bottom: 0.5rem; letter-spacing: 0.5px;">Flusso Ospiti (Pax)</span>
+                                    <h3 style="margin: 0; font-size: 2.5rem; font-weight: 800; color: #0f172a; letter-spacing: -1px;">${totalePax} <span style="font-size: 1.1rem; color: #94a3b8; font-weight: 600;">transiti</span></h3>
                                 </div>
-                                <div style="font-size: 3rem; opacity: 0.1;">👥</div>
-                            </div>
-
-                            <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02);">
-                                <div>
-                                    <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase; display: block; margin-bottom: 0.25rem;">Interventi nel periodo</span>
-                                    <h3 style="margin: 0; font-size: 2rem; font-weight: 800; color: #3b82f6;">${totalePulizieEffettuate} <span style="font-size: 1rem; color: #94a3b8; font-weight: 600;">pulizie completate</span></h3>
-                                </div>
-                                <div style="font-size: 3rem; opacity: 0.1;">🧹</div>
+                                <div style="width: 60px; height: 60px; background: #f1f5f9; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.8rem;">👥</div>
                             </div>
                         </div>
                     </div>
@@ -646,8 +753,9 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
 
             } catch (err) {
                 console.error(err);
-                viewContainer.innerHTML = `<p style="color: #ef4444; text-align: center; padding: 2rem;">Errore caricamento report BI: ${err.message}</p>`;
+                viewContainer.innerHTML = `<p style="color: #ef4444; text-align: center; padding: 2rem; background: #fee2e2; border-radius: 12px; border: 1px solid #f87171;">Errore caricamento BI: ${err.message}</p>`;
             }
+            window.disegnaSelettoriGestione('reports');
             break;
         }
 
@@ -880,7 +988,7 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
             break;
         }
 
-       case 'tasks':
+      case 'tasks':
             if (pageTitle) pageTitle.textContent = 'Gestione Task e Planning';
             viewContainer.innerHTML = `<p style="color: var(--text-muted);">Sincronizzazione assegnazioni...</p>`;
             
@@ -926,30 +1034,53 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
             else if (AppState.tasksTimeFrame === 'week') periodLabel = `Settimana: ${new Date(startDate).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })} al ${new Date(endDate).toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' })}`;
             else if (AppState.tasksTimeFrame === 'month') periodLabel = `Mese: ${currentSelected.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' }).toUpperCase()}`;
 
+            // Separiamo la label per dare stili diversi (es. "Giorno" in grassetto, data in grigio)
+            let periodLabelParts = periodLabel.split(':');
+            let prefissoLabel = periodLabelParts[0] || '';
+            let valoreLabel = periodLabelParts[1] || '';
+
             let taskHtml = `
-                <div class="task-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
-                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-                        <button class="btn-secondary" onclick="navigaTempo(-1)">◀</button>
-                        <input type="date" value="${AppState.selectedTaskDate}" onchange="selezionaDataTask(this.value)" class="form-control" style="width:auto; padding: 0.4rem 0.6rem;">
-                        <button class="btn-secondary" onclick="navigaTempo(1)">▶</button>
-                        <button class="btn-primary" onclick="vaiAdOggi()">Oggi</button>
+                <div class="task-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1.5rem;">
+                    
+                    <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
                         
-                        <div style="display: flex; background: #e2e8f0; padding: 0.25rem; border-radius: 8px; gap: 0.25rem; margin-left: 15px; border: 1px solid #cbd5e1;">
-                            <button style="padding: 0.4rem 0.8rem; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.15s; background: ${AppState.tasksTimeFrame === 'day' ? '#ffffff' : 'transparent'}; color: ${AppState.tasksTimeFrame === 'day' ? '#0f172a' : '#64748b'}; box-shadow: ${AppState.tasksTimeFrame === 'day' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'};" onclick="setTasksTimeFrame('day')">Giorno</button>
-                            <button style="padding: 0.4rem 0.8rem; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.15s; background: ${AppState.tasksTimeFrame === 'week' ? '#ffffff' : 'transparent'}; color: ${AppState.tasksTimeFrame === 'week' ? '#0f172a' : '#64748b'}; box-shadow: ${AppState.tasksTimeFrame === 'week' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'};" onclick="setTasksTimeFrame('week')">Settimana</button>
-                            <button style="padding: 0.4rem 0.8rem; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.15s; background: ${AppState.tasksTimeFrame === 'month' ? '#ffffff' : 'transparent'}; color: ${AppState.tasksTimeFrame === 'month' ? '#0f172a' : '#64748b'}; box-shadow: ${AppState.tasksTimeFrame === 'month' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'};" onclick="setTasksTimeFrame('month')">Mese</button>
+                        <h2 style="margin: 0; font-size: 1.25rem; font-weight: 800; color: #0f172a; min-width: 140px;">
+                            ${prefissoLabel} <span style="color: #64748b; font-weight: 500; font-size: 0.95rem;">${valoreLabel}</span>
+                        </h2>
+
+                        <div style="display: flex; align-items: center; border: 1px solid #cbd5e1; border-radius: 999px; background: #ffffff; padding: 0.2rem; box-shadow: 0 1px 2px rgba(0,0,0,0.02);">
+                            <button onclick="navigaTempo(-1)" style="background: transparent; border: none; padding: 0.35rem 0.5rem; cursor: pointer; color: #475569; border-radius: 999px; transition: background 0.2s; display: flex;" onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'" title="Precedente">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                            </button>
+                            
+                            <input type="date" value="${AppState.selectedTaskDate}" onchange="selezionaDataTask(this.value)" style="background: transparent; border: none; font-weight: 600; color: #334155; font-size: 0.85rem; outline: none; cursor: pointer; padding: 0 0.5rem; font-family: inherit;">
+                            
+                            <button onclick="navigaTempo(1)" style="background: transparent; border: none; padding: 0.35rem 0.5rem; cursor: pointer; color: #475569; border-radius: 999px; transition: background 0.2s; display: flex;" onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'" title="Successivo">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                            </button>
                         </div>
-                        <h2 style="margin-left:15px; font-size: 1.2rem; font-weight: 700; color: #1e293b;">${periodLabel}</h2>
+
+                        <button onclick="vaiAdOggi()" style="padding: 0.45rem 1rem; border-radius: 999px; background: transparent; color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.4); font-weight: 600; font-size: 0.85rem; cursor: pointer; transition: all 0.2s;" onmouseover="this.style.background='rgba(59, 130, 246, 0.05)'; this.style.borderColor='#3b82f6';" onmouseout="this.style.background='transparent'; this.style.borderColor='rgba(59, 130, 246, 0.4)';">Oggi</button>
+
+                        <div style="display: flex; background: #f8fafc; border: 1px solid #e2e8f0; padding: 0.25rem; border-radius: 999px; gap: 0.25rem;">
+                            <button style="padding: 0.35rem 0.8rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; background: ${AppState.tasksTimeFrame === 'day' ? '#ffffff' : 'transparent'}; color: ${AppState.tasksTimeFrame === 'day' ? '#0f172a' : '#64748b'}; box-shadow: ${AppState.tasksTimeFrame === 'day' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'};" onclick="setTasksTimeFrame('day')">Giorno</button>
+                            <button style="padding: 0.35rem 0.8rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; background: ${AppState.tasksTimeFrame === 'week' ? '#ffffff' : 'transparent'}; color: ${AppState.tasksTimeFrame === 'week' ? '#0f172a' : '#64748b'}; box-shadow: ${AppState.tasksTimeFrame === 'week' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'};" onclick="setTasksTimeFrame('week')">Settimana</button>
+                            <button style="padding: 0.35rem 0.8rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; background: ${AppState.tasksTimeFrame === 'month' ? '#ffffff' : 'transparent'}; color: ${AppState.tasksTimeFrame === 'month' ? '#0f172a' : '#64748b'}; box-shadow: ${AppState.tasksTimeFrame === 'month' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'};" onclick="setTasksTimeFrame('month')">Mese</button>
+                        </div>
                     </div>
                     
-                    <div class="task-actions" style="display: flex; gap: 0.75rem; align-items: center;">
+                    <div class="task-actions" style="display: flex; gap: 1rem; align-items: center;">
                         ${AppState.tasksTimeFrame === 'day' || AppState.tasksTimeFrame === 'week' || AppState.tasksTimeFrame === 'month' ? `
-                        <div class="toggle-view-container" style="display: flex; background: #e2e8f0; padding: 0.25rem; border-radius: 6px; gap: 0.25rem;">
-                            <button class="btn-text" style="padding: 0.4rem 0.8rem; border-radius: 4px; font-size: 0.85rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; background: ${AppState.tasksViewMode === 'grid' ? '#ffffff' : 'transparent'}; color: ${AppState.tasksViewMode === 'grid' ? '#0f172a' : '#64748b'}; box-shadow: ${AppState.tasksViewMode === 'grid' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'};" onclick="setTasksViewMode('grid')">🗂️ Card</button>
-                            <button class="btn-text" style="padding: 0.4rem 0.8rem; border-radius: 4px; font-size: 0.85rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; background: ${AppState.tasksViewMode === 'list' ? '#ffffff' : 'transparent'}; color: ${AppState.tasksViewMode === 'list' ? '#0f172a' : '#64748b'}; box-shadow: ${AppState.tasksViewMode === 'list' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'};" onclick="setTasksViewMode('list')">📊 Lista</button>
+                        <div class="toggle-view-container" style="display: flex; background: #f8fafc; border: 1px solid #e2e8f0; padding: 0.25rem; border-radius: 999px; gap: 0.25rem;">
+                            <button class="btn-text" style="padding: 0.35rem 0.8rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; background: ${AppState.tasksViewMode === 'grid' ? '#ffffff' : 'transparent'}; color: ${AppState.tasksViewMode === 'grid' ? '#0f172a' : '#64748b'}; box-shadow: ${AppState.tasksViewMode === 'grid' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'};" onclick="setTasksViewMode('grid')">🗂️ Card</button>
+                            <button class="btn-text" style="padding: 0.35rem 0.8rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; background: ${AppState.tasksViewMode === 'list' ? '#ffffff' : 'transparent'}; color: ${AppState.tasksViewMode === 'list' ? '#0f172a' : '#64748b'}; box-shadow: ${AppState.tasksViewMode === 'list' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'};" onclick="setTasksViewMode('list')">📊 Lista</button>
                         </div>
                         ` : ''}
-                        <button class="btn-primary" onclick="changeView('add-task')">+ Nuovo Task</button>
+                        
+                        <button class="btn-secondary" onclick="changeView('add-task')" style="padding: 0.55rem 1.2rem; border-radius: 999px; background: #ffffff; color: #334155; border: 1px solid #cbd5e1; font-weight: 600; font-size: 0.85rem; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 0.4rem; transition: all 0.2s;" onmouseover="this.style.background='#f8fafc'; this.style.borderColor='#94a3b8';" onmouseout="this.style.background='#ffffff'; this.style.borderColor='#cbd5e1';">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            Nuovo Task
+                        </button>
                     </div>
                 </div>
             `;
@@ -984,7 +1115,7 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                         
                         const statusBadge = task.status === 'done' ? `<span class="badge" style="background-color: #D1FAE5; color: #065F46; font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 4px; font-weight: 600;">Completato</span>` : `<span class="badge" style="background-color: #FEE2E2; color: #991B1B; font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 4px; font-weight: 600;">In Corso</span>`;
                         const typeBadge = task.task_type.includes('Check-out') ? `<span class="badge badge-warning" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 4px;">${task.task_type}</span>` : `<span class="badge badge-info" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 4px;">${task.task_type}</span>`;
-                        const lockCode = task.rooms?.lockbox_code ? `<code>${task.rooms.lockbox_code}</code>` : `${iconaChiave} Fisica`;
+                        const lockCode = task.rooms?.lockbox_code ? `<code>${task.rooms.lockbox_code}</code>` : `🔑 Fisica`;
                         const operatoreNome = task.operators ? `<strong>${task.operators.first_name} ${task.operators.last_name || ''}</strong>` : '<span style="color: #D97706; font-weight: bold; font-size: 0.85rem; background: #FEF3C7; padding: 0.2rem 0.4rem; border-radius: 4px;">⚠️ Libero</span>';
                         const noteText = task.notes ? `<span style="color: #92400E; background-color: #FEF3C7; padding: 0.25rem 0.6rem; border-radius: 4px; font-size: 0.85rem;">"${task.notes}"</span>` : '-';
                         
@@ -1024,7 +1155,7 @@ window.changeView = async function(viewName, param1 = null, param2 = null) {
                             const statusClass = task.status === 'done' ? 'done' : 'pending';
                             const statusText = task.status === 'done' ? 'Completato' : 'Da completare';
                             const badgeClass = task.task_type.includes('Check-out') ? 'badge-warning' : 'badge-info';
-                            const lockCode = task.rooms?.lockbox_code ? task.rooms.lockbox_code : `${iconaChiave} Fisica`;
+                            const lockCode = task.rooms?.lockbox_code ? task.rooms.lockbox_code : `🔑 Fisica`;
                             const operatoreNome = task.operators ? `${task.operators.first_name} ${task.operators.last_name || ''}` : '<span style="color: #D97706; font-weight: bold;">⚠️ Da Assegnare (Libero)</span>';
                             const noteHtml = task.notes ? `<div class="task-operator-notes" style="margin-top: 0.75rem; padding: 0.6rem 0.8rem; background-color: #FEF3C7; border-left: 4px solid #D97706; border-radius: 4px; font-size: 0.85rem; color: #78350F; line-height: 1.4;"><strong>📝 Note:</strong> <span>"${task.notes}"</span></div>` : '';
 
@@ -1254,13 +1385,22 @@ case 'rooms': {
             };
 
             let htmlContent = `
-                <div class="registry-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
-                    <h2 style="margin: 0; font-size: 1.25rem; font-weight: 700; color: #0f172a;">Gestione Proprietari e Società</h2>
-                    <div class="header-actions">
-                        <button class="btn-primary" onclick="changeView('add-company')" style="padding: 0.5rem 1.2rem; border-radius: 6px; background: #4f46e5; color: #ffffff; border: none; font-weight: 500; cursor: pointer;">+ Nuova Società</button>
-                    </div>
-                </div>
-            `;
+    <div class="registry-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
+        <h2 style="margin: 0; font-size: 1.25rem; font-weight: 700; color: #0f172a;">Gestione Proprietari e Società</h2>
+        
+        <div class="header-actions" style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; flex: 1; justify-content: flex-end;">
+            <div style="position: relative; min-width: 250px; max-width: 400px; flex: 1;">
+                <input type="text" id="strutture-search" placeholder="Cerca società, appartamento o indirizzo..." oninput="filtraStrutture(this.value)" style="width: 100%; padding: 0.55rem 1rem 0.55rem 2.2rem; border-radius: 999px; border: 1px solid #cbd5e1; outline: none; font-size: 0.9rem; transition: border-color 0.2s;" onfocus="this.style.borderColor='#3b82f6'" onblur="this.style.borderColor='#cbd5e1'">
+                <span style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 1rem; opacity: 0.5;">🔍</span>
+            </div>
+            
+            <button class="btn-secondary" onclick="changeView('add-company')" style="padding: 0.55rem 1.2rem; border-radius: 999px; background: #ffffff; color: #334155; border: 1px solid #cbd5e1; font-weight: 600; font-size: 0.85rem; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 0.4rem; transition: all 0.2s;" onmouseover="this.style.background='#f8fafc'; this.style.borderColor='#94a3b8';" onmouseout="this.style.background='#ffffff'; this.style.borderColor='#cbd5e1';">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                Nuova Società
+            </button>
+        </div>
+    </div>
+`;
 
             ownersData.forEach(owner => {
                 let roomsHtml = '';
@@ -1301,13 +1441,23 @@ case 'rooms': {
                         if (taskTypesData && taskTypesData.length > 0) {
                             taskTypesData.forEach(type => {
                                 const count = monthlyTasks ? monthlyTasks.filter(t => t.room_id === room.id && t.task_type === type.name).length : 0;
-                                const badgeStyle = count > 0 
-                                    ? 'background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;' 
+                                
+                                // Se ci sono task, lo rendiamo cliccabile con un feedback visivo al passaggio del mouse
+                                const hasTasks = count > 0;
+                                const badgeStyle = hasTasks 
+                                    ? 'background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; cursor: pointer; transition: all 0.2s;' 
                                     : 'background: #f8fafc; border: 1px solid #f1f5f9; color: #cbd5e1; opacity: 0.7;';
+                                
+                                const hoverEffect = hasTasks ? `onmouseover="this.style.transform='scale(1.1)'; this.style.boxShadow='0 2px 4px rgba(0,0,0,0.1)'" onmouseout="this.style.transform='scale(1)'; this.style.boxShadow='none'"` : '';
+                                const onClickAttr = hasTasks ? `onclick="apriDettaglioTask('${room.id}', '${safeRoomName}', '${type.name}')"` : '';
 
                                 dynamicTaskCells += `
                                     <td style="text-align: center; padding: 0.75rem 1rem;">
-                                        <span style="display: inline-block; font-weight: 700; padding: 0.2rem 0.7rem; border-radius: 6px; font-size: 0.85rem; ${badgeStyle}" title="${count} ${type.name} eseguiti nel mese">${count}</span>
+                                        <span style="display: inline-block; font-weight: 700; padding: 0.2rem 0.7rem; border-radius: 6px; font-size: 0.85rem; ${badgeStyle}" 
+                                              title="${count} ${type.name} eseguiti nel mese - Clicca per dettagli" 
+                                              ${onClickAttr} ${hoverEffect}>
+                                            ${count}
+                                        </span>
                                     </td>
                                 `;
                             });
@@ -1357,18 +1507,21 @@ case 'rooms': {
 
                 htmlContent += `
                     <div class="owner-card" style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 1.5rem; margin-bottom: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02);">
-                        <div class="owner-header" style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:1.25rem; border-bottom:1px solid #f1f5f9; padding-bottom:1rem; flex-wrap: wrap; gap: 1rem;">
-                            <div>
-                                <h3 class="clickable-title" onclick="apriModaleAnagrafica('${owner.id}')" title="Visualizza Scheda Completa">${owner.business_name}</h3>
-                                <div class="billing-info" style="margin-top: 0.4rem; color: #64748b; font-size: 0.8rem; line-height: 1.5;">
-                                    <strong>P.IVA:</strong> <code style="font-family:monospace; background:#f1f5f9; padding:2px 6px; border-radius:4px; color:#0f172a;">${pIva}</code> &nbsp;|&nbsp; 
-                                    <strong>C.F.:</strong> <code style="font-family:monospace; background:#f1f5f9; padding:2px 6px; border-radius:4px; color:#0f172a;">${cFiscale}</code> &nbsp;|&nbsp; 
-                                    <strong>Referente:</strong> <span style="color:#334155; font-weight:500;">${refName}</span><br>
-                                    <button class="btn-text" style="padding:0; margin-top:0.4rem; font-size:0.75rem; background:none; border:none; color:#2563EB; cursor:pointer; font-weight: 600;" onclick="changeView('edit-company', '${owner.id}')">✏️ Modifica Anagrafica Società</button>
-                                </div>
-                            </div>
-                            <button class="btn-primary" style="font-size: 0.8rem; padding: 0.45rem 0.85rem; border-radius: 6px; background: #0f172a; color:#ffffff; border:none; cursor:pointer;" onclick="changeView('add-room', '${owner.id}', '${safeBusinessName}')">+ Aggiungi Camera</button>
-                        </div>
+        <div class="owner-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.25rem; border-bottom:1px solid #f1f5f9; padding-bottom:1rem; flex-wrap: wrap; gap: 1rem;">
+            <div>
+                <h3 class="clickable-title" onclick="apriModaleAnagrafica('${owner.id}')" style="margin:0; font-size:1.15rem; color:#0f172a; cursor:pointer;" title="Visualizza Scheda Completa">${owner.business_name}</h3>
+                <div class="billing-info" style="margin-top: 0.4rem; color: #64748b; font-size: 0.8rem; line-height: 1.5;">
+                    <strong>P.IVA:</strong> <code style="font-family:monospace; background:#f1f5f9; padding:2px 6px; border-radius:4px; color:#0f172a;">${pIva}</code> &nbsp;|&nbsp; 
+                    <strong>C.F.:</strong> <code style="font-family:monospace; background:#f1f5f9; padding:2px 6px; border-radius:4px; color:#0f172a;">${cFiscale}</code> &nbsp;|&nbsp; 
+                    <strong>Referente:</strong> <span style="color:#334155; font-weight:500;">${refName}</span><br>
+                    <button class="btn-text" style="padding:0; margin-top:0.4rem; font-size:0.75rem; background:none; border:none; color:#2563EB; cursor:pointer; font-weight: 600;" onclick="changeView('edit-company', '${owner.id}')">✏️ Modifica Anagrafica Società</button>
+                </div>
+            </div>
+                            <button class="btn-text" style="font-size: 0.8rem; padding: 0.45rem 0.85rem; border-radius: 6px; background: transparent; color: #4f46e5; border: 1px solid #e0e7ff; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 0.3rem; transition: all 0.2s;" onmouseover="this.style.background='#f5f3ff'; this.style.borderColor='#c084fc';" onmouseout="this.style.background='transparent'; this.style.borderColor='#e0e7ff';" onclick="changeView('add-room', '${owner.id}', '${safeBusinessName}')">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                Aggiungi Camera
+            </button>
+        </div>
                         <div class="table-responsive" style="overflow-x: auto;">
                             <table class="room-table" style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem;">
                                 <thead>
@@ -1390,83 +1543,262 @@ case 'rooms': {
             break;
         }
         case 'staff': {
-            if (pageTitle) pageTitle.textContent = 'Gestione Staff (Operatori)';
-            viewContainer.innerHTML = `<p style="color: #64748b;">Caricamento staff...</p>`;
+            if (pageTitle) pageTitle.textContent = 'Risorse Umane e Planner';
+            viewContainer.innerHTML = `<div style="display: flex; justify-content: center; padding: 3rem;"><div class="spinner" style="width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #4f46e5; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>`;
             
+            if (!AppState.staffViewMode) AppState.staffViewMode = 'list';
+            if (!window.hrPlannerDate) window.hrPlannerDate = new Date();
+            if (!window.hrPlannerSort) window.hrPlannerSort = 'first_name_asc';
+
             const { data: staffData, error: staffError } = await supabase
                 .from('operators')
-                .select('*')
-                .order('created_at', { ascending: false });
+                .select('*');
 
             if (staffError) return;
 
-            let staffHtml = `
+            let sortedStaff = staffData || [];
+            sortedStaff.sort((a, b) => {
+                const nameA = (a.first_name || '').toLowerCase();
+                const nameB = (b.first_name || '').toLowerCase();
+                const lastA = (a.last_name || '').toLowerCase();
+                const lastB = (b.last_name || '').toLowerCase();
+                
+                if (window.hrPlannerSort === 'first_name_asc') return nameA.localeCompare(nameB);
+                if (window.hrPlannerSort === 'first_name_desc') return nameB.localeCompare(nameA);
+                if (window.hrPlannerSort === 'last_name_asc') return lastA.localeCompare(lastB);
+                if (window.hrPlannerSort === 'last_name_desc') return lastB.localeCompare(lastA);
+                return 0;
+            });
+
+            // HEADER UNIFICATO
+            let mainHtml = `
                 <div class="registry-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
-                    <h2 style="margin: 0; font-size: 1.25rem; font-weight: 700; color: #0f172a;">Elenco Operatori Attivi</h2>
-                    <div class="header-actions">
-                        <button class="btn-primary" onclick="changeView('add-staff')" style="padding: 0.5rem 1.2rem; border-radius: 6px; background: #4f46e5; color: #ffffff; border: none; font-weight: 500; cursor: pointer;">+ Nuovo Operatore</button>
+                    <div>
+                        <h2 style="margin: 0; font-size: 1.5rem; font-weight: 800; color: #0f172a; letter-spacing: -0.5px;">Gestione Personale</h2>
+                        <p style="margin: 0.2rem 0 0 0; font-size: 0.9rem; color: #64748b;">Anagrafiche, contatti e pianificazione mensile presenze.</p>
+                    </div>
+                    
+                    <div class="header-actions" style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                        
+                        <!-- SELETTORE DI VISTA -->
+                        <div style="display: flex; background: #ffffff; border: 1px solid #cbd5e1; padding: 0.25rem; border-radius: 999px; gap: 0.2rem; box-shadow: 0 1px 2px rgba(0,0,0,0.02);">
+                            <button onclick="window.setStaffViewMode('list')" style="
+                                background: ${AppState.staffViewMode === 'list' ? '#eff6ff' : 'transparent'}; 
+                                color: ${AppState.staffViewMode === 'list' ? '#3b82f6' : '#64748b'}; 
+                                border: 1px solid ${AppState.staffViewMode === 'list' ? '#bfdbfe' : 'transparent'}; 
+                                padding: 0.45rem 1.2rem; 
+                                border-radius: 999px; 
+                                font-weight: 700; 
+                                font-size: 0.85rem; 
+                                cursor: pointer; 
+                                transition: all 0.2s ease;
+                            ">👥 Anagrafica</button>
+                            
+                            <button onclick="window.setStaffViewMode('planner')" style="
+                                background: ${AppState.staffViewMode === 'planner' ? '#eff6ff' : 'transparent'}; 
+                                color: ${AppState.staffViewMode === 'planner' ? '#3b82f6' : '#64748b'}; 
+                                border: 1px solid ${AppState.staffViewMode === 'planner' ? '#bfdbfe' : 'transparent'}; 
+                                padding: 0.45rem 1.2rem; 
+                                border-radius: 999px; 
+                                font-weight: 700; 
+                                font-size: 0.85rem; 
+                                cursor: pointer; 
+                                transition: all 0.2s ease;
+                            ">📅 Planner HR</button>
+                        </div>
+                        
+                        <button class="btn-primary" onclick="changeView('add-staff')" style="padding: 0.55rem 1.2rem; border-radius: 999px; background: #4f46e5; color: #ffffff; border: none; font-weight: 600; font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 0.4rem; transition: background 0.2s;" onmouseover="this.style.background='#4338ca'" onmouseout="this.style.background='#4f46e5'">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> 
+                            Nuovo Operatore
+                        </button>
                     </div>
                 </div>
-                <div class="card" style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.03); overflow: hidden; padding: 0;">
+            `;
+
+            // CONTENITORE STRUTTURALE UNICO (Stessa card, stesse dimensioni esterne)
+            mainHtml += `<div class="card" style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); overflow: hidden; padding: 0;">`;
+
+            // VISTA 1: ANAGRAFICA
+            if (AppState.staffViewMode === 'list') {
+                mainHtml += `
                     <div class="table-responsive">
                         <table class="room-table" style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem;">
                             <thead>
                                 <tr style="background-color: #f8fafc; border-bottom: 2px solid #e2e8f0;">
-                                    <th style="padding: 1.2rem 1rem; color: #475569; font-weight: 600;">Nome e Cognome</th>
-                                    <th style="padding: 1.2rem 1rem; color: #475569; font-weight: 600;">Telefono</th>
-                                    <th style="text-align: center; padding: 1.2rem 1rem; color: #475569; font-weight: 600;">PIN Accesso</th>
-                                    <th style="text-align: center; padding: 1.2rem 1rem; color: #475569; font-weight: 600;">Stato</th>
-                                    <th style="text-align: right; padding: 1.2rem 1rem; color: #475569; font-weight: 600;"></th>
+                                    <th style="padding: 1rem 1.25rem; color: #64748b; font-weight: 700; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px;">Nome e Cognome</th>
+                                    <th style="padding: 1rem 1.25rem; color: #64748b; font-weight: 700; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px;">Telefono</th>
+                                    <th style="text-align: center; padding: 1rem 1.25rem; color: #64748b; font-weight: 700; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px;">PIN Accesso</th>
+                                    <th style="text-align: center; padding: 1rem 1.25rem; color: #64748b; font-weight: 700; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px;">Stato</th>
+                                    <th style="text-align: right; padding: 1rem 1.25rem; color: #64748b; font-weight: 700; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px;">Azioni</th>
                                 </tr>
                             </thead>
                             <tbody>
-            `;
+                `;
 
-            if (staffData.length === 0) {
-                staffHtml += `<tr><td colspan="5" style="text-align:center; padding: 3rem; color: #94a3b8; font-style: italic;">Nessun operatore attualmente registrato nel sistema.</td></tr>`;
-            } else {
-                staffData.forEach((op, index) => {
-                    const rowBg = index % 2 === 0 ? '#ffffff' : '#f8fafc';
-                    const statusBadge = op.is_active 
-                        ? `<span class="badge" style="background-color: #d1fae5; color: #065f46; font-size: 0.75rem; padding: 0.3rem 0.8rem; border-radius: 9999px; font-weight: 600; border: 1px solid #a7f3d0;">ATTIVO</span>` 
-                        : `<span class="badge" style="background-color: #fee2e2; color: #991b1b; font-size: 0.75rem; padding: 0.3rem 0.8rem; border-radius: 9999px; font-weight: 600; border: 1px solid #fca5a5;">DISATTIVATO</span>`;
+                if (sortedStaff.length === 0) {
+                    mainHtml += `<tr><td colspan="5" style="text-align:center; padding: 3rem; color: #94a3b8; font-style: italic;">Nessun operatore attualmente registrato.</td></tr>`;
+                } else {
+                    sortedStaff.forEach((op, index) => {
+                        const rowBg = index % 2 === 0 ? '#ffffff' : '#f8fafc';
+                        const statusBadge = op.is_active 
+                            ? `<span class="badge" style="background-color: #d1fae5; color: #065f46; font-size: 0.75rem; padding: 0.3rem 0.8rem; border-radius: 9999px; font-weight: 600; border: 1px solid #a7f3d0;">ATTIVO</span>` 
+                            : `<span class="badge" style="background-color: #fee2e2; color: #991b1b; font-size: 0.75rem; padding: 0.3rem 0.8rem; border-radius: 9999px; font-weight: 600; border: 1px solid #fca5a5;">DISATTIVATO</span>`;
 
-                    // Intera riga cliccabile che apre la nuova modale
-                    staffHtml += `
-                        <tr style="background-color: ${rowBg}; border-bottom: 1px solid #e2e8f0; cursor: pointer; transition: background-color 0.15s;" 
-                            onmouseover="this.style.backgroundColor='#f1f5f9'" 
-                            onmouseout="this.style.backgroundColor='${rowBg}'"
-                            onclick="changeView('edit-staff', '${op.id}')">
+                        mainHtml += `
+                            <tr style="background-color: ${rowBg}; border-bottom: 1px solid #e2e8f0; cursor: pointer; transition: background-color 0.15s; height: 57px;" 
+                                onmouseover="this.style.backgroundColor='#eff6ff'" 
+                                onmouseout="this.style.backgroundColor='${rowBg}'"
+                                onclick="changeView('edit-staff', '${op.id}')">
+                                
+                                <td style="padding: 0 1.25rem; display: flex; align-items: center; gap: 0.75rem; height: 57px; box-sizing: border-box;">
+                                    <div style="width: 32px; height: 32px; border-radius: 50%; background: #e0e7ff; color: #4f46e5; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.85rem; flex-shrink: 0;">
+                                        ${op.first_name.charAt(0)}${op.last_name ? op.last_name.charAt(0) : ''}
+                                    </div>
+                                    <strong style="color: #0f172a; font-size: 0.95rem;">${op.first_name} ${op.last_name || ''}</strong>
+                                </td>
+                                <td style="padding: 0 1.25rem; color: #475569; font-weight: 500;">${op.phone || '-'}</td>
+                                <td style="text-align: center; padding: 0 1.25rem;">
+                                    <code style="font-family: monospace; background: #f1f5f9; border: 1px solid #e2e8f0; padding: 4px 8px; border-radius: 6px; font-weight: bold; color: #0f172a; letter-spacing: 2px; font-size: 0.9rem;">${op.pin || '0000'}</code>
+                                </td>
+                                <td style="text-align: center; padding: 0 1.25rem;">${statusBadge}</td>
+                                <td style="text-align: right; padding: 0 1.25rem; color: #3b82f6; font-size: 0.85rem; font-weight: 600;">
+                                    Fascicolo HR <span style="font-size: 1.2rem; vertical-align: middle;">›</span>
+                                </td>
+                            </tr>
+                        `;
+                    });
+                }
+                mainHtml += `</tbody></table></div>`;
+            } 
+            // VISTA 2: PLANNER HR
+            else if (AppState.staffViewMode === 'planner') {
+                const { data: events } = await supabase.from('hr_events').select('*');
+                
+                const year = window.hrPlannerDate.getFullYear();
+                const month = window.hrPlannerDate.getMonth() + 1; 
+                const daysInMonth = new Date(year, month, 0).getDate();
+                const monthName = window.hrPlannerDate.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' }).toUpperCase();
+                
+                const totalRows = sortedStaff.length;
+                const totalCols = daysInMonth;
+
+                mainHtml += `
+                    <style>
+                        .hr-cell { border-bottom: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; height: 57px; cursor: pointer; transition: all 0.1s ease; display: flex; align-items: center; justify-content: center; font-size: 0.9rem; font-weight: 800; user-select: none; outline: none; box-sizing: border-box; }
+                        .hr-cell:focus { box-shadow: inset 0 0 0 2px #3b82f6 !important; background-color: #eff6ff !important; z-index: 10; position: relative; }
+                        .hr-cell:hover { filter: brightness(0.95); }
+                        .planner-scroll::-webkit-scrollbar { height: 8px; width: 8px; }
+                        .planner-scroll::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 4px; }
+                        .planner-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+                        .planner-scroll::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+                    </style>
+
+                    <!-- CONTROLLI PLANNER -->
+                    <div style="padding: 1rem 1.25rem; border-bottom: 1px solid #e2e8f0; background: #ffffff; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+                        
+                        <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                            <div style="display: flex; align-items: center; background: #f8fafc; border-radius: 8px; padding: 0.2rem; border: 1px solid #e2e8f0;">
+                                <button onclick="window.navigaMeseHR(-1)" style="border: none; background: transparent; padding: 0.3rem 0.6rem; cursor: pointer; font-weight: bold; color: #475569; transition: color 0.2s;" onmouseover="this.style.color='#0f172a'" onmouseout="this.style.color='#475569'">◀</button>
+                                <span style="font-weight: 700; width: 130px; text-align: center; font-size: 0.9rem; color: #0f172a; letter-spacing: 0.5px;">${monthName}</span>
+                                <button onclick="window.navigaMeseHR(1)" style="border: none; background: transparent; padding: 0.3rem 0.6rem; cursor: pointer; font-weight: bold; color: #475569; transition: color 0.2s;" onmouseover="this.style.color='#0f172a'" onmouseout="this.style.color='#475569'">▶</button>
+                            </div>
                             
-                            <td style="padding: 1rem; display: flex; align-items: center; gap: 0.75rem;">
-                                <div style="width: 32px; height: 32px; border-radius: 50%; background: #e0e7ff; color: #4f46e5; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.85rem;">
-                                    ${op.first_name.charAt(0)}${op.last_name ? op.last_name.charAt(0) : ''}
-                                </div>
-                                <strong style="color: #0f172a;">${op.first_name} ${op.last_name || ''}</strong>
-                            </td>
-                            <td style="padding: 1rem; color: #475569;">${op.phone || '-'}</td>
-                            <td style="text-align: center; padding: 1rem;">
-                                <code style="font-family: monospace; background: #e2e8f0; padding: 4px 8px; border-radius: 6px; font-weight: bold; color: #0f172a; letter-spacing: 2px;">${op.pin || '0000'}</code>
-                            </td>
-                            <td style="text-align: center; padding: 1rem;">${statusBadge}</td>
-                            <td style="text-align: right; padding: 1rem; color: #3b82f6; font-size: 0.85rem; font-weight: 600;">
-                                Apri Fascicolo <span style="font-size: 1.1rem; vertical-align: middle;">›</span>
-                            </td>
-                        </tr>
-                    `;
-                });
+                            <select onchange="window.ordinaPlannerHR(this.value)" style="padding: 0.45rem 0.8rem; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 0.85rem; font-weight: 600; color: #475569; outline: none; background: #f8fafc; cursor: pointer;">
+                                <option value="first_name_asc" ${window.hrPlannerSort === 'first_name_asc' ? 'selected' : ''}>Ordina: Nome (A-Z)</option>
+                                <option value="first_name_desc" ${window.hrPlannerSort === 'first_name_desc' ? 'selected' : ''}>Ordina: Nome (Z-A)</option>
+                                <option value="last_name_asc" ${window.hrPlannerSort === 'last_name_asc' ? 'selected' : ''}>Ordina: Cognome (A-Z)</option>
+                                <option value="last_name_desc" ${window.hrPlannerSort === 'last_name_desc' ? 'selected' : ''}>Ordina: Cognome (Z-A)</option>
+                            </select>
+                        </div>
+
+                        <!-- Legenda -->
+                        <div style="font-size: 0.75rem; font-weight: 600; display: flex; gap: 1rem; color: #64748b;">
+                            <span style="display:flex; align-items:center; gap:0.4rem;"><kbd style="background:#d1fae5; color:#065f46; padding:2px 6px; border-radius:4px; border:1px solid #34d399; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">P</kbd> Presenza</span>
+                            <span style="display:flex; align-items:center; gap:0.4rem;"><kbd style="background:#fed7aa; color:#92400e; padding:2px 6px; border-radius:4px; border:1px solid #fbbf24; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">M</kbd> Malattia</span>
+                            <span style="display:flex; align-items:center; gap:0.4rem;"><kbd style="background:#fecaca; color:#991b1b; padding:2px 6px; border-radius:4px; border:1px solid #f87171; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">F</kbd> Ferie</span>
+                            <span style="display:flex; align-items:center; gap:0.4rem;"><kbd style="background:#e0e7ff; color:#3730a3; padding:2px 6px; border-radius:4px; border:1px solid #818cf8; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">R</kbd> Permesso</span>
+                            <span style="display:flex; align-items:center; gap:0.4rem;"><kbd style="background:#fbcfe8; color:#831843; padding:2px 6px; border-radius:4px; border:1px solid #f472b6; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">A</kbd> Assenza</span>
+                        </div>
+                    </div>
+
+                    <!-- GRIGLIA CALENDARIO (Stessa larghezza colonna fissa a 240px come la tabella anagrafica) -->
+                    <div class="planner-scroll" style="display: grid; grid-template-columns: 240px repeat(${daysInMonth}, minmax(38px, 1fr)); overflow-x: auto; position: relative; background: #ffffff;">
+                        
+                        <!-- Intestazione Colonna Nome -->
+                        <div style="height: 57px; padding: 0 1.25rem; background:#f8fafc; border-bottom: 2px solid #e2e8f0; border-right: 2px solid #e2e8f0; position: sticky; left: 0; top: 0; z-index: 20; display: flex; align-items: center; color: #64748b; font-weight: 700; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px; box-sizing: border-box;">Nome e Cognome</div>
+                        ${Array.from({length: daysInMonth}, (_, i) => {
+                            const day = i + 1;
+                            const dateObj = new Date(year, month - 1, day);
+                            const isWeekend = dateObj.getDay() === 0 || dateObj.getDay() === 6;
+                            const weekDayLetter = dateObj.toLocaleDateString('it-IT', { weekday: 'short' }).charAt(0).toUpperCase();
+                            
+                            const headerBg = isWeekend ? '#f1f5f9' : '#f8fafc';
+                            const textColor = isWeekend ? '#ef4444' : '#64748b';
+                            
+                            return `
+                            <div style="height: 57px; text-align:center; background:${headerBg}; border-bottom: 2px solid #e2e8f0; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; justify-content: center; gap: 2px; position: sticky; top: 0; z-index: 5; box-sizing: border-box;">
+                                <span style="font-weight: 700; font-size: 0.85rem; color: ${textColor}; line-height: 1;">${day}</span>
+                                <span style="font-size: 0.65rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; line-height: 1;">${weekDayLetter}</span>
+                            </div>`;
+                        }).join('')}
+                        
+                        <!-- Righe Operatori -->
+                        ${sortedStaff.map((op, rowIndex) => `
+                            <div style="height: 57px; padding: 0 1.25rem; border-bottom: 1px solid #e2e8f0; border-right: 2px solid #e2e8f0; font-size: 0.95rem; font-weight:600; background: white; position: sticky; left: 0; z-index: 10; color: #0f172a; display: flex; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box;">
+                                <div style="width: 32px; height: 32px; border-radius: 50%; background: #e0e7ff; color: #4f46e5; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.85rem; margin-right: 0.75rem; flex-shrink: 0;">${op.first_name.charAt(0)}${op.last_name ? op.last_name.charAt(0) : ''}</div>
+                                ${op.first_name} ${op.last_name || ''}
+                            </div>
+                            ${Array.from({length: daysInMonth}, (_, colIndex) => {
+                                const day = colIndex + 1;
+                                const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                                const isWeekend = new Date(year, month - 1, day).getDay() === 0 || new Date(year, month - 1, day).getDay() === 6;
+                                
+                                const event = events ? events.find(e => e.operator_id === op.id && e.event_date === dateStr) : null;
+                                
+                                let bgColor = isWeekend ? '#f8fafc' : '#ffffff';
+                                let innerText = '';
+                                let textColor = '#475569';
+                                
+                                if (event) {
+                                    const evtType = event.event_type.toLowerCase();
+                                    if (evtType.includes('presenza')) { bgColor = '#d1fae5'; innerText = 'P'; textColor = '#065f46'; }
+                                    else if (evtType.includes('malattia')) { bgColor = '#fed7aa'; innerText = 'M'; textColor = '#92400e'; }
+                                    else if (evtType.includes('ferie')) { bgColor = '#fecaca'; innerText = 'F'; textColor = '#991b1b'; }
+                                    else if (evtType.includes('permesso')) { bgColor = '#e0e7ff'; innerText = 'R'; textColor = '#3730a3'; }
+                                    else if (evtType.includes('assenza')) { bgColor = '#fbcfe8'; innerText = 'A'; textColor = '#831843'; }
+                                }
+                                
+                                return `
+                                <div class="hr-cell" tabindex="0"
+                                     data-op-id="${op.id}" data-date="${dateStr}" data-event-id="${event ? event.id : ''}" data-is-weekend="${isWeekend}"
+                                     data-row="${rowIndex}" data-col="${colIndex}" data-total-rows="${totalRows}" data-total-cols="${totalCols}"
+                                     style="background: ${bgColor}; color: ${textColor};" 
+                                     onclick="window.gestisciClickCellaHR(this)">
+                                     ${innerText}
+                                </div>`;
+                            }).join('')}
+                        `).join('')}
+                    </div>
+                `;
             }
-            staffHtml += `</tbody></table></div></div>`;
-            viewContainer.innerHTML = staffHtml;
+
+            // Chiusura del blocco strutturale card
+            mainHtml += `
+                <div style="background: #ffffff; padding: 0.75rem 1.25rem; border-top: 1px solid #e2e8f0; font-size: 0.8rem; color: #64748b; display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.1rem;">⌨️</span> Clicca una casella e muoviti liberamente con le <strong>Frecce</strong>. Digita <strong>P, M, F, R, A</strong> per compilare e <strong>Backspace / Canc</strong> per svuotare.
+                </div>
+            </div>`;
+
+            viewContainer.innerHTML = mainHtml;
             break;
         }
 
         case 'edit-staff': {
-            apriModal('Fascicolo Operatore', `<p style="color:#64748b;">Caricamento dati in corso...</p>`);
+            apriModal('Fascicolo Operatore', `<p style="text-align:center; color:#64748b;">Caricamento dati in corso...</p>`);
             
             const { data: memberData } = await supabase.from('operators').select('*').eq('id', param1).single();
             
-            // Recupera i documenti dalla TUA tabella esistente
+            // Recupera i documenti dalla tua tabella esistente
             const { data: documenti } = await supabase.from('operator_documents')
                 .select('*')
                 .eq('operator_id', param1)
@@ -1477,32 +1809,33 @@ case 'rooms': {
                 filesListHtml = documenti.map(doc => {
                     const dataCaricamento = new Date(doc.uploaded_at).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric' });
                     return `
-                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 0.5rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 0.5rem; transition: all 0.2s;" onmouseover="this.style.borderColor='#cbd5e1'" onmouseout="this.style.borderColor='#e2e8f0'">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <span style="font-size: 1.2rem;">📄</span>
+                                <span style="font-size: 1.3rem;">📄</span>
                                 <div>
                                     <div style="color: #0f172a; font-weight: 600; font-size: 0.9rem; word-break: break-all;">${doc.file_name}</div>
                                     <div style="color: #64748b; font-size: 0.75rem;">Caricato il ${dataCaricamento}</div>
                                 </div>
                             </div>
-                            <div style="display: flex; gap: 0.5rem;">
-                                <button type="button" class="btn-text" style="color: #4f46e5; font-size: 0.8rem; font-weight: 600;" onclick="scaricaDocumentoOperatore('${doc.storage_path}', '${doc.file_name.replace(/'/g, "\\'")}')">Vedi</button>
-                                <button type="button" class="btn-danger-text" style="font-size: 0.8rem; padding: 0;" onclick="eliminaDocumentoOperatore('${doc.id}', '${doc.storage_path}', '${param1}', '${(memberData.first_name + ' ' + (memberData.last_name || '')).replace(/'/g, "\\'")}')">Rimuovi</button>
+                            <div style="display: flex; gap: 0.75rem;">
+                                <button type="button" class="btn-text" style="color: #3b82f6; font-size: 0.85rem; font-weight: 600; background:none; border:none; cursor:pointer;" onclick="scaricaDocumentoOperatore('${doc.storage_path}', '${doc.file_name.replace(/'/g, "\\'")}')">Vedi</button>
+                                <button type="button" class="btn-danger-text" style="font-size: 0.85rem; padding: 0; color:#ef4444; font-weight:600; background:none; border:none; cursor:pointer;" onclick="eliminaDocumentoOperatore('${doc.id}', '${doc.storage_path}', '${param1}', '${(memberData.first_name + ' ' + (memberData.last_name || '')).replace(/'/g, "\\'")}')">Rimuovi</button>
                             </div>
                         </div>
                     `;
                 }).join('');
             } else {
-                filesListHtml = '<p style="font-size: 0.8rem; font-style: italic; color: #94a3b8;">Nessun documento caricato per questo operatore.</p>';
+                filesListHtml = '<p style="font-size: 0.85rem; font-style: italic; color: #94a3b8; text-align:center; margin: 1rem 0;">Nessun documento caricato per questo operatore.</p>';
             }
             
-            // Logica per i Tab della modale
+            // Logica per i Tab della modale staff coerente con lo stile delle camere
             window.switchStaffTab = function(tabName) {
                 document.querySelectorAll('.staff-tab-content').forEach(el => el.style.display = 'none');
                 document.querySelectorAll('.staff-tab-btn').forEach(el => {
                     el.style.borderBottom = '2px solid transparent';
                     el.style.color = '#64748b';
                     el.style.fontWeight = '500';
+                    el.style.background = 'transparent';
                 });
                 
                 document.getElementById('tab-' + tabName).style.display = 'block';
@@ -1511,76 +1844,118 @@ case 'rooms': {
                     activeBtn.style.borderBottom = '2px solid #3b82f6';
                     activeBtn.style.color = '#3b82f6';
                     activeBtn.style.fontWeight = '700';
+                    activeBtn.style.background = '#eff6ff';
                 }
             };
 
             const cType = memberData.contract_type || 'task';
             const safeOpName = `${memberData.first_name} ${memberData.last_name || ''}`.replace(/'/g, "\\'");
 
-            apriModal(`Fascicolo Operatore: ${memberData.first_name} ${memberData.last_name || ''}`, `
-                <div style="display: flex; border-bottom: 1px solid #e2e8f0; margin-bottom: 1.5rem; margin-top: -1rem;">
-                    <button type="button" id="btn-tab-anagrafica" class="staff-tab-btn" onclick="switchStaffTab('anagrafica')" style="flex: 1; padding: 0.75rem; background: transparent; border: none; border-bottom: 2px solid #3b82f6; color: #3b82f6; font-weight: 700; cursor: pointer; transition: all 0.2s;">Anagrafica & Contratto</button>
-                    <button type="button" id="btn-tab-documenti" class="staff-tab-btn" onclick="switchStaffTab('documenti')" style="flex: 1; padding: 0.75rem; background: transparent; border: none; border-bottom: 2px solid transparent; color: #64748b; font-weight: 500; cursor: pointer; transition: all 0.2s;">Gestione Documenti</button>
+            apriModal(`Fascicolo: <span style="color:#3b82f6;">${memberData.first_name} ${memberData.last_name || ''}</span>`, `
+                <div style="display: flex; border-bottom: 1px solid #e2e8f0; margin-bottom: 1.5rem; margin-top: -1rem; border-radius: 8px 8px 0 0; overflow: hidden;">
+                    <button type="button" id="btn-tab-anagrafica" class="staff-tab-btn" onclick="switchStaffTab('anagrafica')" style="flex: 1; padding: 0.85rem; background: #eff6ff; border: none; border-bottom: 2px solid #3b82f6; color: #3b82f6; font-weight: 700; cursor: pointer; transition: all 0.2s;">📋 Anagrafica & Contratto</button>
+                    <button type="button" id="btn-tab-documenti" class="staff-tab-btn" onclick="switchStaffTab('documenti')" style="flex: 1; padding: 0.85rem; background: transparent; border: none; border-bottom: 2px solid transparent; color: #64748b; font-weight: 500; cursor: pointer; transition: all 0.2s;">📁 Gestione Documenti</button>
                 </div>
 
                 <form onsubmit="aggiornaOperatore(event, '${param1}')">
                     
-                    <!-- TAB 1: ANAGRAFICA E CONTRATTO -->
                     <div id="tab-anagrafica" class="staff-tab-content" style="display: block;">
-                        <div class="form-row">
-                            <div class="form-group"><label class="form-label">Nome *</label><input type="text" id="form-staff-first" class="form-control" value="${memberData.first_name || ''}" required></div>
-                            <div class="form-group"><label class="form-label">Cognome</label><input type="text" id="form-staff-last" class="form-control" value="${memberData.last_name || ''}"></div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group"><label class="form-label">Telefono</label><input type="tel" id="form-staff-phone" class="form-control" value="${memberData.phone || ''}"></div>
-                            <div class="form-group">
-                                <label class="form-label">PIN Accesso App (4 cifre) *</label>
-                                <input type="text" id="form-staff-pin" class="form-control" value="${memberData.pin || ''}" maxlength="4" required style="font-family: monospace; letter-spacing: 2px; font-weight: bold;">
+                        
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 1.25rem; margin-bottom: 1.5rem;">
+                            <h4 style="margin: 0 0 1rem 0; color: #0f172a; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;">
+                                👤 Dati Personali
+                            </h4>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                <div class="form-group" style="margin: 0;">
+                                    <label class="form-label" style="color: #475569; font-weight: 600;">Nome *</label>
+                                    <input type="text" id="form-staff-first" class="form-control" value="${memberData.first_name || ''}" style="background: white;" required>
+                                </div>
+                                <div class="form-group" style="margin: 0;">
+                                    <label class="form-label" style="color: #475569; font-weight: 600;">Cognome</label>
+                                    <input type="text" id="form-staff-last" class="form-control" value="${memberData.last_name || ''}" style="background: white;">
+                                </div>
+                            </div>
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label" style="color: #475569; font-weight: 600;">Telefono</label>
+                                <input type="tel" id="form-staff-phone" class="form-control" value="${memberData.phone || ''}" style="background: white;">
                             </div>
                         </div>
 
-                        <h4 style="margin-top: 1.5rem; margin-bottom: 1rem; color: #0f172a; font-size: 0.95rem; border-bottom: 1px solid #f1f5f9; padding-bottom: 0.5rem;">Inquadramento Economico</h4>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label class="form-label">Tipo di Retribuzione</label>
-                                <select id="form-staff-contract-type" class="form-control">
-                                    <option value="task" ${cType === 'task' ? 'selected' : ''}>A Gettone (Per singola pulizia completata)</option>
-                                    <option value="hourly" ${cType === 'hourly' ? 'selected' : ''}>Tariffa Oraria</option>
-                                    <option value="fixed" ${cType === 'fixed' ? 'selected' : ''}>Stipendio Fisso Mensile</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label class="form-label">Importo Concordato (€)</label>
-                                <input type="number" step="0.01" id="form-staff-contract-rate" class="form-control" value="${memberData.contract_rate || '0.00'}">
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 1.25rem; margin-bottom: 1.5rem;">
+                            <h4 style="margin: 0 0 1rem 0; color: #0f172a; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;">
+                                🔐 Accesso App Operatore
+                            </h4>
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label" style="color: #475569; font-weight: 600;">PIN Accesso App (4 cifre) *</label>
+                                <input type="text" id="form-staff-pin" class="form-control" value="${memberData.pin || ''}" maxlength="4" required style="background: white; font-family: monospace; letter-spacing: 2px; font-weight: bold; font-size: 1.1rem; max-width: 140px; text-align: center;">
                             </div>
                         </div>
-                        
-                        <div class="form-group" style="margin-top: 1rem;">
-                            <label class="form-label" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                                <input type="checkbox" id="form-staff-active" ${memberData.is_active !== false ? 'checked' : ''} style="width: 1.2rem; height: 1.2rem; accent-color: #10b981;">
-                                <span style="font-weight: 600; color: #334155;">Operatore Attivo (Consenti accesso)</span>
-                            </label>
+
+                        <div style="background: #fdf4ff; border: 1px solid #fbcfe8; border-radius: 10px; padding: 1.25rem;">
+                            <h4 style="margin: 0 0 1rem 0; color: #831843; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;">
+                                💶 Inquadramento Economico & Amministrazione
+                            </h4>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                <div class="form-group" style="margin: 0;">
+                                    <label class="form-label" style="color: #831843; font-weight: 600;">Tipo di Contratto</label>
+                                    <select id="form-staff-contract" class="form-control" style="background: white;">
+                                        <option value="A chiamata" ${memberData.contract_type === 'A chiamata' ? 'selected' : ''}>A chiamata</option>
+                                        <option value="Part-time" ${memberData.contract_type === 'Part-time' ? 'selected' : ''}>Part-time</option>
+                                        <option value="Full-time" ${memberData.contract_type === 'Full-time' ? 'selected' : ''}>Full-time</option>
+                                        <option value="Partita IVA" ${memberData.contract_type === 'Partita IVA' ? 'selected' : ''}>Partita IVA</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" style="margin: 0;">
+                                    <label class="form-label" style="color: #831843; font-weight: 600;">IBAN Bancario</label>
+                                    <input type="text" id="form-staff-iban" class="form-control" value="${memberData.iban || ''}" placeholder="IT00A000..." style="background: white;">
+                                </div>
+                            </div>
+
+                            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
+                                <div class="form-group" style="margin: 0;">
+                                    <label class="form-label" style="color: #831843; font-weight: 600;">Metodo di Retribuzione</label>
+                                    <select id="form-staff-payment" class="form-control" style="background: white;">
+                                        <option value="A intervento" ${memberData.payment_method === 'A intervento' || memberData.contract_type === 'task' ? 'selected' : ''}>A Gettone (Per pulizia espletata)</option>
+                                        <option value="Oraria" ${memberData.payment_method === 'Oraria' || memberData.contract_type === 'hourly' ? 'selected' : ''}>Tariffa Oraria</option>
+                                        <option value="Fissa Mensile" ${memberData.payment_method === 'Fissa Mensile' || memberData.contract_type === 'fixed' ? 'selected' : ''}>Stipendio Fisso Mensile</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" style="margin: 0;">
+                                    <label class="form-label" style="color: #831843; font-weight: 600;">Importo (€)</label>
+                                    <input type="number" step="0.01" id="form-staff-pay" class="form-control" value="${memberData.base_pay || memberData.contract_rate || '0.00'}" style="background: white;">
+                                </div>
+                            </div>
+                            
+                            <div class="form-group" style="margin: 0; background: white; padding: 0.75rem; border-radius: 8px; border: 1px solid #fbcfe8;">
+                                <label class="form-label" style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; margin: 0; user-select: none;">
+                                    <input type="checkbox" id="form-staff-active" ${memberData.is_active !== false ? 'checked' : ''} style="width: 1.25rem; height: 1.25rem; accent-color: #10b981;">
+                                    <span style="font-weight: 600; color: #334155;">Operatore Abilitato (Consenti l'accesso al gestionale)</span>
+                                </label>
+                            </div>
                         </div>
                     </div>
 
-                    <!-- TAB 2: DOCUMENTI -->
                     <div id="tab-documenti" class="staff-tab-content" style="display: none;">
-                        <div style="background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 10px; padding: 1.25rem; margin-bottom: 1.5rem; text-align: center;">
-                            <label for="file-upload-input" style="cursor: pointer; display: block;">
-                                <span style="font-size: 1.5rem; display: block; margin-bottom: 0.25rem;">📤</span>
-                                <span style="color: #0f172a; font-weight: 700; font-size: 0.9rem;">Seleziona un file da aggiungere</span>
-                                <span style="display:block; font-size: 0.75rem; color: #64748b; margin-top: 0.2rem;">Contratti, Documenti d'identità, Certificati</span>
+                        
+                        <div style="background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 10px; padding: 1.5rem; margin-bottom: 1.5rem; text-align: center; transition: border-color 0.2s;" onmouseover="this.style.borderColor='#94a3b8'" onmouseout="this.style.borderColor='#cbd5e1'">
+                            <label for="file-upload-input" style="cursor: pointer; display: block; margin: 0;">
+                                <span style="font-size: 1.8rem; display: block; margin-bottom: 0.4rem;">📤</span>
+                                <span style="color: #0f172a; font-weight: 700; font-size: 0.95rem; display: block;">Trascina o seleziona un file da allegare</span>
+                                <span style="display:block; font-size: 0.8rem; color: #64748b; margin-top: 0.25rem;">Contratti firmati, Documenti d'identità, Certificazioni medici</span>
                             </label>
-                            <!-- IL TUO UPLOAD ORIGINALE COLLEGATO QUI -->
                             <input type="file" id="file-upload-input" style="display: none;" onchange="caricaDocumentoOperatore(this, '${param1}', '${safeOpName}')">
-                            <div id="upload-spinner" style="display: none; justify-content: center; align-items: center; gap: 0.5rem; margin-top: 0.5rem; color: #4f46e5; font-weight: 600; font-size: 0.85rem;">
-                                <div class="spinner" style="width: 16px; height: 16px; border: 2px solid #e2e8f0; border-top: 2px solid #4f46e5; border-radius: 50%; animation: spin 0.8s linear infinite;"></div> Caricamento nel Cloud...
+                            <div id="upload-spinner" style="display: none; justify-content: center; align-items: center; gap: 0.5rem; margin-top: 0.75rem; color: #4f46e5; font-weight: 600; font-size: 0.85rem;">
+                                <div class="spinner" style="width: 16px; height: 16px; border: 2px solid #e2e8f0; border-top: 2px solid #4f46e5; border-radius: 50%; animation: spin 0.8s linear infinite;"></div> Salvataggio Cloud...
                             </div>
                         </div>
                         
-                        <div>
-                            <h5 style="margin-bottom: 0.75rem; color: #475569;">File Archiviati:</h5>
-                            ${filesListHtml}
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 1.25rem;">
+                            <h4 style="margin: 0 0 1rem 0; color: #0f172a; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;">
+                                📁 Archivio Documentale Digitale
+                            </h4>
+                            <div style="max-height: 260px; overflow-y: auto; padding-right: 2px;">
+                                ${filesListHtml}
+                            </div>
                         </div>
                     </div>
 
@@ -1733,7 +2108,7 @@ case 'rooms': {
 
         case 'billing': {
             if (pageTitle) pageTitle.textContent = 'Consuntivi Mensili e Fatturazioni B2B';
-            viewContainer.innerHTML = `<p style="color: #64748b;">Elaborazione e calcolo dei corrispettivi in corso...</p>`;
+            viewContainer.innerHTML = `<div style="display: flex; justify-content: center; padding: 3rem;"><div class="spinner" style="width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #3b82f6; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>`;
 
             try {
                 const year = AppState.selectedBillingMonth.split('-')[0];
@@ -1760,23 +2135,30 @@ case 'rooms': {
                     .lte('check_out_date', lastDayMonth);
                 if (bookingsError) throw new Error("Errore recupero bookings: " + bookingsError.message);
 
+                // --- HEADER CON RICERCA E SELETTORE A PILLOLA ---
                 let billingHtml = `
-                <div class="registry-header web-only-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap;">
+                <div class="registry-header web-only-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; flex-wrap: wrap; gap: 1rem;">
                     <div>
-                        <h2 style="margin:0; font-size:1.25rem;">Chiusura Mese Proprietari</h2>
-                        <p style="margin:0; font-size:0.85rem; color:#64748b;">Tutti i calcoli includono le pulizie eseguite e la biancheria lavata.</p>
+                        <h2 style="margin:0; font-size:1.5rem; font-weight:800; color:#0f172a; letter-spacing: -0.5px;">Chiusura Mese Proprietari</h2>
+                        <p style="margin:0.2rem 0 0 0; font-size:0.9rem; color:#64748b;">Riepilogo dei corrispettivi B2B (Pulizie + Lavanderia).</p>
                     </div>
-                    <div style="display:flex; gap:10px; align-items:center;">
-                        <label style="font-weight:700; font-size:0.9rem;">Mese Competenza:</label>
-                        <input type="month" value="${AppState.selectedBillingMonth}" onchange="window.selezionaMeseFatture(this.value)" class="form-control" style="padding:0.4rem; border-radius:6px; border:1px solid #cbd5e1;">
+                    
+                    <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; flex: 1; justify-content: flex-end;">
+                        <!-- BARRA DI RICERCA -->
+                        <div style="position: relative; min-width: 250px; max-width: 350px;">
+                            <input type="text" id="fatture-search" placeholder="Cerca società o struttura..." oninput="filtraFatture(this.value)" style="width: 100%; padding: 0.55rem 1rem 0.55rem 2.2rem; border-radius: 999px; border: 1px solid #cbd5e1; outline: none; font-size: 0.9rem; transition: border-color 0.2s;" onfocus="this.style.borderColor='#3b82f6'" onblur="this.style.borderColor='#cbd5e1'">
+                            <span style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 1rem; opacity: 0.5;">🔍</span>
+                        </div>
+                        
+                        <!-- SELETTORE MESE -->
+                        <div style="display:flex; align-items:center; background: #ffffff; padding: 0.45rem 0.8rem; border-radius: 999px; border: 1px solid #cbd5e1; box-shadow: 0 1px 2px rgba(0,0,0,0.02);">
+                            <label style="font-weight:600; font-size:0.85rem; color:#475569; margin-right: 0.4rem;">Competenza:</label>
+                            <input type="month" value="${AppState.selectedBillingMonth}" onchange="window.selezionaMeseFatture(this.value)" style="border: none; background: transparent; outline: none; font-weight: 700; color: #0f172a; font-size: 0.9rem; cursor: pointer; font-family: inherit;">
+                        </div>
                     </div>
                 </div>
                 `;
 
-                let globalTotalePulizie = 0;
-                let globalTotaleBiancheria = 0;
-                let globalTotaleGenerale = 0;
-                let clientRanking = [];
                 let ownersCardsHtml = '';
 
                 bOwners?.forEach(owner => {
@@ -1787,7 +2169,8 @@ case 'rooms': {
                     let totaleBiancheria = 0;
                     let riepilogoRigheHtml = '';
 
-                    ownerTasks.forEach(task => {
+                    ownerTasks.forEach((task, index) => {
+                        const rowBg = index % 2 === 0 ? '#ffffff' : '#f8fafc';
                         let costoPulizia = 0;
                         let dettaglioPuliziaHtml = '';
 
@@ -1801,13 +2184,13 @@ case 'rooms': {
                             if (paxCount > 0) {
                                 const paxPrice = (rBillingMode === 'pax') ? (task.rooms?.custom_pax_price || 0) : (owner.default_pax_price || 0);
                                 costoPulizia = paxCount * parseFloat(paxPrice);
-                                dettaglioPuliziaHtml = `€ ${costoPulizia.toFixed(2)}<br><small style="color:#64748b; font-weight:normal;">(${paxCount} pax × €${parseFloat(paxPrice).toFixed(2)})</small>`;
+                                dettaglioPuliziaHtml = `€ ${costoPulizia.toFixed(2)}<br><span style="color:#64748b; font-size: 0.75rem; font-weight: 500;">(${paxCount} pax × €${parseFloat(paxPrice).toFixed(2)})</span>`;
                             } else {
                                 if (task.rooms && task.rooms.room_task_pricing) {
                                     const matchingPrice = task.rooms.room_task_pricing.find(p => p.task_type_name === task.task_type);
                                     if (matchingPrice) costoPulizia = parseFloat(matchingPrice.price) || 0;
                                 }
-                                dettaglioPuliziaHtml = `€ ${costoPulizia.toFixed(2)}<br><small style="color:#f59e0b; font-size:0.7rem; font-weight:normal;">(Forfait Piano B)</small>`;
+                                dettaglioPuliziaHtml = `€ ${costoPulizia.toFixed(2)}<br><span style="color:#f59e0b; font-size:0.75rem; font-weight: 600;">(Forfait Base)</span>`;
                             }
                         } else {
                             if (task.rooms && task.rooms.room_task_pricing) {
@@ -1828,7 +2211,7 @@ case 'rooms': {
                             costoLavanderiaRiga += subtotaleKit;
                             totaleBiancheria += subtotaleKit;
                             if(usage.quantity > 0) {
-                                dettagliKitTask.push(`${usage.quantity}x ${usage.laundry_kits.name} (€${subtotaleKit.toFixed(2)})`);
+                                dettagliKitTask.push(`<span style="display:inline-block; margin-bottom:2px;">${usage.quantity}x ${usage.laundry_kits.name} <span style="color:#64748b;">(€${subtotaleKit.toFixed(2)})</span></span>`);
                             }
                         });
 
@@ -1838,112 +2221,253 @@ case 'rooms': {
                             costoLavanderiaRiga += subtotaleArticolo;
                             totaleBiancheria += subtotaleArticolo;
                             if(usage.quantity > 0) {
-                                dettagliKitTask.push(`<span style="color:#f59e0b;">+ ${usage.quantity}x ${usage.catalog_items.name} (€${subtotaleArticolo.toFixed(2)})</span>`);
+                                dettagliKitTask.push(`<span style="display:inline-block; color:#d97706; margin-bottom:2px;">+ ${usage.quantity}x ${usage.catalog_items.name} <span style="color:#b45309;">(€${subtotaleArticolo.toFixed(2)})</span></span>`);
                             }
                         });
 
                         let totaleRiga = costoPulizia + costoLavanderiaRiga;
+                        
+                        // Formattazione data pulita
+                        const taskDateObj = new Date(task.task_date);
+                        const dataFormattata = taskDateObj.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: '2-digit' });
 
                         riepilogoRigheHtml += `
-                            <tr style="border-bottom:1px solid #f1f5f9; font-size:0.85rem;">
-                                <td style="padding:0.6rem 0.5rem;">${new Date(task.task_date).toLocaleDateString('it-IT')}</td>
-                                <td style="padding:0.6rem 0.5rem;"><strong>${task.rooms?.name}</strong></td>
-                                <td style="padding:0.6rem 0.5rem;"><span class="badge badge-clean" style="font-size:0.7rem;">${task.task_type}</span></td>
-                                <td style="padding:0.6rem 0.5rem; text-align:center; font-weight:600;">${dettaglioPuliziaHtml}</td>
-                                <td style="padding:0.6rem 0.5rem; color:#4f46e5; font-size:0.8rem;">${dettagliKitTask.join('<br>') || '-'}</td>
-                                <td style="padding:0.6rem 0.5rem; text-align:right; font-weight:800; color:#0f172a;">€ ${totaleRiga.toFixed(2)}</td>
+                            <tr style="background-color: ${rowBg}; border-bottom: 1px solid #f1f5f9; font-size: 0.85rem; transition: background 0.2s;" onmouseover="this.style.background='#eff6ff'" onmouseout="this.style.background='${rowBg}'">
+                                <td style="padding: 0.75rem 1rem; color: #475569; font-weight: 500;">${dataFormattata}</td>
+                                <td style="padding: 0.75rem 1rem;"><strong style="color: #0f172a;">${task.rooms?.name}</strong></td>
+                                <td style="padding: 0.75rem 1rem;"><span style="background: #e0e7ff; color: #4338ca; padding: 0.2rem 0.6rem; border-radius: 999px; font-weight: 600; font-size: 0.75rem;">${task.task_type}</span></td>
+                                <td style="padding: 0.75rem 1rem; text-align: center; font-weight: 700; color: #0f172a;">${dettaglioPuliziaHtml}</td>
+                                <td style="padding: 0.75rem 1rem; color: #4f46e5; font-size: 0.8rem;">${dettagliKitTask.join('<br>') || '<span style="color:#94a3b8; font-style:italic;">-</span>'}</td>
+                                <td style="padding: 0.75rem 1rem; text-align: right; font-weight: 800; color: #0f172a; font-size: 0.95rem;">€ ${totaleRiga.toFixed(2)}</td>
                             </tr>
                         `;
                     });
 
                     const totaleGeneraleOwner = totalePulizie + totaleBiancheria;
-                    
-                    globalTotalePulizie += totalePulizie;
-                    globalTotaleBiancheria += totaleBiancheria;
-                    globalTotaleGenerale += totaleGeneraleOwner;
-                    
-                    if (totaleGeneraleOwner > 0) {
-                        clientRanking.push({ name: owner.business_name, total: totaleGeneraleOwner });
-                    }
 
                     ownersCardsHtml += `
-                        <div class="card owner-billing-card" id="billing-card-${owner.id}" style="background:white; border:1px solid #e2e8f0; border-radius:14px; padding:1.5rem; margin-bottom:2rem; box-shadow:0 4px 6px -1px rgba(0,0,0,0.02);">
+                        <div class="card owner-billing-card" id="billing-card-${owner.id}" style="background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 1.5rem; margin-bottom: 2rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02);">
                             
-                            <div class="web-only-header" style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #f1f5f9; padding-bottom:1rem; margin-bottom:1rem; flex-wrap:wrap; gap:1rem;">
-                                <div>
-                                    <h3 style="margin:0; font-size:1.15rem; color:#0f172a;">🏢 ${owner.business_name}</h3>
-                                    <small style="color:#64748b;">P.IVA: ${owner.vat_number || 'N/A'} | ${ownerTasks.length} interventi eseguiti</small>
+                            <div class="web-only-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #f1f5f9; padding-bottom: 1rem; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 1rem;">
+                                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                    <div style="width: 40px; height: 40px; border-radius: 10px; background: #f8fafc; border: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: center; font-size: 1.2rem;">🏢</div>
+                                    <div>
+                                        <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700; color: #0f172a;">${owner.business_name}</h3>
+                                        <p style="margin: 0; color: #64748b; font-size: 0.8rem; font-weight: 500;">P.IVA: <code style="font-family:monospace; color:#0f172a;">${owner.vat_number || 'N/A'}</code> &nbsp;|&nbsp; Interventi: <strong style="color:#3b82f6;">${ownerTasks.length}</strong></p>
+                                    </div>
                                 </div>
+                                <!-- PULSANTE STAMPA CONSUNTIVO -->
+                                <button class="btn-secondary" onclick="stampaSingoloReport('billing-card-${owner.id}')" style="padding: 0.4rem 0.8rem; border-radius: 6px; background: #ffffff; color: #475569; border: 1px solid #cbd5e1; font-weight: 600; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 0.4rem; transition: all 0.2s;" onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='#ffffff'">
+                                    🖨️ Stampa Consuntivo
+                                </button>
                             </div>
 
                             ${ownerTasks.length > 0 ? `
-                                <div class="table-responsive invoice-table-wrapper" style="margin-bottom:1.5rem; border:1px solid #e2e8f0; border-radius:8px;">
-                                    <table style="width:100%; border-collapse:collapse; text-align:left;">
-                                        <tr style="background:#f8fafc; border-bottom:2px solid #e2e8f0; font-size:0.8rem; color:#475569; text-transform:uppercase;">
-                                            <th style="padding:0.75rem 0.5rem;">Data</th>
-                                            <th style="padding:0.75rem 0.5rem;">Struttura</th>
-                                            <th style="padding:0.75rem 0.5rem;">Attività</th>
-                                            <th style="padding:0.75rem 0.5rem; text-align:center;">Manodopera</th>
-                                            <th style="padding:0.75rem 0.5rem;">Lavanderia / Extra</th>
-                                            <th style="padding:0.75rem 0.5rem; text-align:right;">Totale Riga</th>
-                                        </tr>
-                                        ${riepilogoRigheHtml}
+                                <div class="table-responsive invoice-table-wrapper" style="border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; margin-bottom: 1.5rem;">
+                                    <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                                        <thead>
+                                            <tr style="background: #f8fafc; border-bottom: 2px solid #e2e8f0; font-size: 0.8rem; color: #475569; text-transform: uppercase; font-weight: 700;">
+                                                <th style="padding: 0.85rem 1rem;">Data</th>
+                                                <th style="padding: 0.85rem 1rem;">Struttura</th>
+                                                <th style="padding: 0.85rem 1rem;">Attività</th>
+                                                <th style="padding: 0.85rem 1rem; text-align: center;">Manodopera</th>
+                                                <th style="padding: 0.85rem 1rem;">Extra / Lavanderia</th>
+                                                <th style="padding: 0.85rem 1rem; text-align: right;">Totale Riga</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${riepilogoRigheHtml}
+                                        </tbody>
                                     </table>
                                 </div>
                                 
-                                <div style="display: flex; justify-content: flex-end; align-items: flex-end; flex-direction: column; gap: 0.5rem; margin-top: 2rem;">
-                                    <div style="display:flex; justify-content:flex-end; gap:15px; font-size:0.9rem; color: #475569;">
-                                        <span>Totale Servizi di Pulizia: <b>€ ${totalePulizie.toFixed(2)}</b></span>
+                                <div style="display: flex; justify-content: flex-end; align-items: flex-end; flex-direction: column; gap: 0.5rem; margin-top: 1.5rem; padding-top: 1rem; border-top: 1px dashed #e2e8f0;">
+                                    <div style="display:flex; justify-content:flex-end; gap: 1rem; font-size: 0.85rem; color: #64748b;">
+                                        <span>Tot. Pulizie: <b style="color:#0f172a;">€ ${totalePulizie.toFixed(2)}</b></span>
                                         <span>|</span>
-                                        <span>Totale Servizi Lavanderia: <b>€ ${totaleBiancheria.toFixed(2)}</b></span>
+                                        <span>Tot. Lavanderia: <b style="color:#0f172a;">€ ${totaleBiancheria.toFixed(2)}</b></span>
                                     </div>
                                     <div style="margin-top: 0.5rem; text-align: right;">
-                                        <span style="font-size:0.85rem; color:#64748b; font-weight:700; display:block; text-transform:uppercase; margin-bottom: 0.25rem;">Totale</span>
-                                        <strong style="font-size:2rem; color:#000000; line-height: 1;">€ ${totaleGeneraleOwner.toFixed(2)}</strong>
+                                        <span style="font-size: 0.75rem; color: #94a3b8; font-weight: 800; display: block; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.25rem;">Totale Da Fatturare</span>
+                                        <strong style="font-size: 2.25rem; color: #0f172a; line-height: 1; letter-spacing: -1px;">€ ${totaleGeneraleOwner.toFixed(2)}</strong>
                                     </div>
                                 </div>
-                            ` : '<p style="color:#94a3b8; font-style:italic; text-align:center; padding:2rem 0; margin:0; border: 1px dashed #e2e8f0; border-radius: 8px;">Nessun intervento registrato nel mese selezionato.</p>'}
+                            ` : '<div style="padding: 2.5rem 1rem; text-align: center; border: 1px dashed #cbd5e1; border-radius: 12px; background: #f8fafc;"><p style="color: #64748b; font-weight: 500; margin: 0;">Nessun intervento registrato nel mese selezionato per questo cliente.</p></div>'}
                         </div>
                     `;
                 });
-                
-                clientRanking.sort((a, b) => b.total - a.total);
-                const topClientName = clientRanking.length > 0 ? clientRanking[0].name : 'Nessun dato in questo mese';
-                const topClientTotal = clientRanking.length > 0 ? `€ ${clientRanking[0].total.toFixed(2)}` : '';
 
-                const kpiDashboardHtml = `
-                    <div class="web-only-header" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.25rem; margin-bottom: 2rem;">
-                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-left: 4px solid #10b981;">
-                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Fatturato Mese</span>
-                            <h3 style="margin: 0.5rem 0 0 0; font-size: 2rem; font-weight: 800; color: #0f172a;">€ ${globalTotaleGenerale.toFixed(2)}</h3>
-                        </div>
-                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-left: 4px solid #3b82f6;">
-                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Ricavi Pulizie</span>
-                            <h3 style="margin: 0.5rem 0 0 0; font-size: 1.5rem; font-weight: 800; color: #0f172a;">€ ${globalTotalePulizie.toFixed(2)}</h3>
-                        </div>
-                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-left: 4px solid #8b5cf6;">
-                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Ricavi Lavanderia</span>
-                            <h3 style="margin: 0.5rem 0 0 0; font-size: 1.5rem; font-weight: 800; color: #0f172a;">€ ${globalTotaleBiancheria.toFixed(2)}</h3>
-                        </div>
-                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border-left: 4px solid #f59e0b;">
-                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase;">🏆 Top Cliente</span>
-                            <h3 style="margin: 0.5rem 0 0.2rem 0; font-size: 1.1rem; font-weight: 800; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${topClientName}">${topClientName}</h3>
-                            <span style="font-size: 0.95rem; font-weight: 700; color: #f59e0b;">${topClientTotal}</span>
-                        </div>
-                    </div>
-                `;
-
-                viewContainer.innerHTML = billingHtml + kpiDashboardHtml + ownersCardsHtml;
+                viewContainer.innerHTML = billingHtml + ownersCardsHtml;
 
             } catch (err) {
                 console.error("ERRORE FATTURAZIONE:", err);
                 viewContainer.innerHTML = `
-                    <div style="padding: 2rem; color: #ef4444; background: #fee2e2; border-radius: 8px; border: 1px solid #f87171;">
+                    <div style="padding: 2rem; color: #ef4444; background: #fee2e2; border-radius: 12px; border: 1px solid #f87171; max-width: 600px; margin: 0 auto; text-align: center;">
                         <h3 style="margin-top:0;">Ops! Errore nel motore di calcolo</h3>
-                        <p>Dettaglio tecnico: <b>${err.message || err}</b></p>
-                        <p style="font-size: 0.85rem; color: #b91c1c; margin-top: 1rem;">Copia questo testo in grassetto e dimmi cosa dice!</p>
+                        <p style="font-weight: 500;">Dettaglio tecnico: <b>${err.message || err}</b></p>
+                        <p style="font-size: 0.85rem; color: #b91c1c; margin-top: 1rem;">Copia questo testo in grassetto e segnalalo all'assistenza.</p>
                     </div>`;
             }
+            window.disegnaSelettoriGestione('billing');
+            break;
+        }
+
+        case 'expenses': {
+            if (pageTitle) pageTitle.textContent = 'Prima Nota e Spese Aziendali';
+            viewContainer.innerHTML = `<div style="display: flex; justify-content: center; padding: 3rem;"><div class="spinner" style="width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #3b82f6; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>`;
+
+            if (!AppState.selectedExpenseMonth) {
+                AppState.selectedExpenseMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
+            }
+
+            try {
+                const year = AppState.selectedExpenseMonth.split('-')[0];
+                const month = AppState.selectedExpenseMonth.split('-')[1];
+                const ultimoGiorno = new Date(year, parseInt(month), 0).getDate();
+                const firstDayMonth = `${year}-${month}-01`;
+                const lastDayMonth = `${year}-${month}-${ultimoGiorno}`;
+
+                // Presuppone una tabella 'expenses' in Supabase
+                const { data: expensesData, error } = await supabase
+                    .from('expenses')
+                    .select('*')
+                    .gte('expense_date', firstDayMonth)
+                    .lte('expense_date', lastDayMonth)
+                    .order('expense_date', { ascending: false });
+
+                if (error) throw error;
+
+                let totaleUscite = 0;
+                let righeSpeseHtml = '';
+
+                if (expensesData && expensesData.length > 0) {
+                    expensesData.forEach((spesa, index) => {
+                        const rowBg = index % 2 === 0 ? '#ffffff' : '#f8fafc';
+                        const dataSpesa = new Date(spesa.expense_date).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: '2-digit' });
+                        const importo = parseFloat(spesa.amount) || 0;
+                        totaleUscite += importo;
+
+                        const badgeRecurring = spesa.is_recurring ? `<span style="margin-left: 8px; font-size: 0.65rem; background: #e0e7ff; color: #4338ca; padding: 0.2rem 0.5rem; border-radius: 999px; font-weight: 600;">🔄 Ricorrente</span>` : '';
+
+                        righeSpeseHtml += `
+                            <tr style="background-color: ${rowBg}; border-bottom: 1px solid #f1f5f9; transition: background 0.2s;" onmouseover="this.style.background='#eff6ff'" onmouseout="this.style.background='${rowBg}'">
+                                <td style="padding: 0.85rem 1rem; color: #475569; font-weight: 500;">${dataSpesa}</td>
+                                <td style="padding: 0.85rem 1rem;">
+                                    <strong style="color: #0f172a; font-size: 0.95rem;">${spesa.description}</strong>
+                                    ${badgeRecurring}
+                                </td>
+                                <td style="padding: 0.85rem 1rem;"><span style="background: #f1f5f9; color: #475569; padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">${spesa.category || 'Generale'}</span></td>
+                                <td style="padding: 0.85rem 1rem; text-align: right; font-weight: 800; color: #ef4444; font-size: 1rem;">€ ${importo.toFixed(2)}</td>
+                                <td style="padding: 0.85rem 1rem; text-align: right;">
+                                    <button class="btn-text" style="color: #ef4444; background: #fee2e2; padding: 0.35rem 0.6rem; border-radius: 6px; font-weight: 600; border: none; cursor: pointer;" onclick="eliminaSpesa('${spesa.id}')">🗑️ Elimina</button>
+                                </td>
+                            </tr>
+                        `;
+                    });
+                } else {
+                    righeSpeseHtml = `<tr><td colspan="5" style="text-align:center; padding: 3rem 1rem; color: #64748b; font-style: italic;">Nessuna spesa registrata in questo mese.</td></tr>`;
+                }
+
+                viewContainer.innerHTML = `
+                    <div class="registry-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; flex-wrap: wrap; gap: 1rem;">
+                        <div>
+                            <h2 style="margin:0; font-size:1.5rem; font-weight:800; color:#0f172a; letter-spacing: -0.5px;">Prima Nota</h2>
+                            <p style="margin:0.2rem 0 0 0; font-size:0.9rem; color:#64748b;">Registro delle uscite aziendali e costi operativi.</p>
+                        </div>
+                        
+                        <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                            <div style="display:flex; align-items:center; background: #ffffff; padding: 0.45rem 0.8rem; border-radius: 999px; border: 1px solid #cbd5e1; box-shadow: 0 1px 2px rgba(0,0,0,0.02);">
+                                <label style="font-weight:600; font-size:0.85rem; color:#475569; margin-right: 0.4rem;">Mese:</label>
+                                <input type="month" value="${AppState.selectedExpenseMonth}" onchange="window.selezionaMeseSpese(this.value)" style="border: none; background: transparent; outline: none; font-weight: 700; color: #0f172a; font-size: 0.9rem; cursor: pointer; font-family: inherit;">
+                            </div>
+                            <button class="btn-secondary" onclick="changeView('add-expense')" style="padding: 0.55rem 1.2rem; border-radius: 999px; background: #ffffff; color: #334155; border: 1px solid #cbd5e1; font-weight: 600; font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 0.4rem; transition: all 0.2s;" onmouseover="this.style.background='#f8fafc'; this.style.borderColor='#94a3b8';" onmouseout="this.style.background='#ffffff'; this.style.borderColor='#cbd5e1';">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                                Aggiungi Spesa
+                            </button>
+                        </div>
+                    </div>
+
+                    <div style="background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 1.5rem; margin-bottom: 2rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); display: flex; align-items: center; justify-content: space-between;">
+                        <div>
+                            <span style="font-size: 0.85rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px;">Totale Uscite Registrate</span>
+                            <h3 style="margin: 0; font-size: 2.25rem; font-weight: 800; color: #ef4444; letter-spacing: -1px;">€ ${totaleUscite.toFixed(2)}</h3>
+                        </div>
+                        <div style="width: 50px; height: 50px; background: #fee2e2; color: #ef4444; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.5rem;">📉</div>
+                    </div>
+
+                    <div class="card" style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); overflow: hidden; padding: 0;">
+                        <div class="table-responsive">
+                            <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem;">
+                                <thead style="background: #f8fafc; border-bottom: 2px solid #e2e8f0;">
+                                    <tr>
+                                        <th style="padding: 1rem; color: #475569; font-weight: 700; text-transform: uppercase; font-size: 0.8rem;">Data</th>
+                                        <th style="padding: 1rem; color: #475569; font-weight: 700; text-transform: uppercase; font-size: 0.8rem;">Descrizione Movimento</th>
+                                        <th style="padding: 1rem; color: #475569; font-weight: 700; text-transform: uppercase; font-size: 0.8rem;">Categoria</th>
+                                        <th style="padding: 1rem; color: #475569; font-weight: 700; text-transform: uppercase; font-size: 0.8rem; text-align: right;">Importo</th>
+                                        <th style="padding: 1rem; text-align: right;"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${righeSpeseHtml}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                viewContainer.innerHTML = `<p style="color: #ef4444; text-align: center; padding: 2rem;">Errore caricamento Prima Nota: ${err.message}</p>`;
+            }
+            window.disegnaSelettoriGestione('expenses');
+            break;
+        }
+
+        case 'add-expense': {
+            const defaultDate = new Date().toISOString().split('T')[0];
+            apriModal('Registra Nuova Spesa', `
+                <form onsubmit="salvaSpesa(event)">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label" style="font-weight: 600;">Data Movimento *</label>
+                            <input type="date" id="form-exp-date" class="form-control" value="${defaultDate}" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" style="font-weight: 600;">Importo (€) *</label>
+                            <input type="number" step="0.01" id="form-exp-amount" class="form-control" placeholder="0.00" style="font-weight: bold; color: #ef4444;" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label class="form-label" style="font-weight: 600;">Descrizione della Spesa *</label>
+                        <input type="text" id="form-exp-desc" class="form-control" placeholder="es. Rifornimento furgone, Acquisto aspirapolvere..." required>
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 1.5rem;">
+                        <label class="form-label" style="font-weight: 600;">Categoria di Costo *</label>
+                        <select id="form-exp-category" class="form-control" required>
+                            <option value="Carburante e Trasporti">Carburante e Trasporti</option>
+                            <option value="Materiali e Prodotti">Materiali e Prodotti</option>
+                            <option value="Manutenzione Attrezzature">Manutenzione Attrezzature</option>
+                            <option value="Software e Abbonamenti">Software e Abbonamenti</option>
+                            <option value="Tasse e Commercialista">Tasse e Commercialista</option>
+                            <option value="Altro">Altro (Generico)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" style="background: #f8fafc; padding: 1rem; border-radius: 8px; border: 1px solid #e2e8f0;">
+                        <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; margin: 0;">
+                            <input type="checkbox" id="form-exp-recurring" style="width: 1.2rem; height: 1.2rem; accent-color: #3b82f6;">
+                            <span style="font-weight: 600; color: #334155; font-size: 0.9rem;">Imposta come Spesa Ricorrente Mensile</span>
+                        </label>
+                    </div>
+
+                    <div class="form-actions" style="margin-top: 2rem; border-top: 1px solid #e2e8f0; padding-top: 1.25rem;">
+                        <div class="form-actions-right">
+                            <button type="button" class="btn-secondary" onclick="chiudiModal()">Annulla</button>
+                            <button type="submit" id="btn-salva-spesa" class="btn-primary" style="background: #ef4444; border: none;">Registra Uscita</button>
+                        </div>
+                    </div>
+                </form>
+            `);
             break;
         }
 
@@ -2155,6 +2679,7 @@ case 'rooms': {
                         <div class="form-group"><label class="form-label">Nome *</label><input type="text" id="form-staff-first" class="form-control" required></div>
                         <div class="form-group"><label class="form-label">Cognome *</label><input type="text" id="form-staff-last" class="form-control" required></div>
                     </div>
+                    
                     <h3 style="margin-top: 1.5rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Credenziali Accesso</h3>
                     <div class="form-group"><label class="form-label">Telefono (Usato come ID di Login) *</label><input type="tel" id="form-staff-phone" class="form-control" required></div>
                     <div class="form-group"><label class="form-label">PIN a 4 cifre *</label>
@@ -2163,11 +2688,47 @@ case 'rooms': {
                             <button type="button" class="btn-secondary" onclick="generaPin()">🎲</button>
                         </div>
                     </div>
-                    <div class="form-group" style="margin-top: 2rem;">
+                    
+                    <h3 style="margin-top: 2rem; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #fbcfe8; color: #831843;">Inquadramento Economico & Amministrazione</h3>
+                    <div style="background: #fdf4ff; border: 1px solid #fbcfe8; border-radius: 10px; padding: 1.25rem; margin-bottom: 1.5rem;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label" style="color: #831843; font-weight: 600;">Tipo di Contratto</label>
+                                <select id="form-staff-contract" class="form-control" style="background: white;">
+                                    <option value="A chiamata" selected>A chiamata</option>
+                                    <option value="Part-time">Part-time</option>
+                                    <option value="Full-time">Full-time</option>
+                                    <option value="Partita IVA">Partita IVA</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label" style="color: #831843; font-weight: 600;">IBAN Bancario</label>
+                                <input type="text" id="form-staff-iban" class="form-control" placeholder="IT00A000..." style="background: white;">
+                            </div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem;">
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label" style="color: #831843; font-weight: 600;">Metodo di Retribuzione</label>
+                                <select id="form-staff-payment" class="form-control" style="background: white;">
+                                    <option value="A intervento" selected>A Gettone (Per pulizia espletata)</option>
+                                    <option value="Oraria">Tariffa Oraria</option>
+                                    <option value="Fissa Mensile">Stipendio Fisso Mensile</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label" style="color: #831843; font-weight: 600;">Importo (€)</label>
+                                <input type="number" step="0.01" id="form-staff-pay" class="form-control" value="0.00" style="background: white;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="margin-top: 1rem;">
                         <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: 600; color: var(--primary-color);">
                             <input type="checkbox" id="form-staff-active" checked style="width: 1.2rem; height: 1.2rem;"> Operatore Attivo (Consenti l'accesso)
                         </label>
                     </div>
+                    
                     <div class="form-actions" style="margin-top: 2rem; border-top: 1px solid #e2e8f0; padding-top: 1.25rem;">
                         <div class="form-actions-right">
                             <button type="button" class="btn-secondary" onclick="chiudiModal()">Annulla</button>
@@ -2378,8 +2939,9 @@ case 'add-room':
                 </form>
             `);
             break;
+            
             case 'edit-room':
-            apriModal('Modifica Struttura e Accessi', `<p>Recupero configurazione camera e listini...</p>`);
+            apriModal('Modifica Struttura', `<p style="text-align:center; color:#64748b;">Recupero configurazione e listini...</p>`);
             
             const { data: roomData } = await supabase.from('rooms').select('*, room_task_pricing(*)').eq('id', param1).single();
             const { data: taskTypesForEdit } = await supabase.from('task_types').select('*').order('name');
@@ -2390,65 +2952,157 @@ case 'add-room':
 
             let dynamicPriceFieldsEditHtml = '';
             if (taskTypesForEdit && taskTypesForEdit.length > 0) {
-                dynamicPriceFieldsEditHtml = `<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; background: #f8fafc; padding: 1rem; border-radius: 8px; border: 1px solid #e2e8f0;">`;
+                dynamicPriceFieldsEditHtml = `<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">`;
                 taskTypesForEdit.forEach(t => {
                     const existingPriceObj = roomData.room_task_pricing ? roomData.room_task_pricing.find(p => p.task_type_name === t.name) : null;
                     const existingPrice = existingPriceObj ? parseFloat(existingPriceObj.price).toFixed(2) : '0.00';
                     
                     dynamicPriceFieldsEditHtml += `
-                        <div class="form-group">
-                            <label class="form-label" style="font-weight:600; font-size:0.85rem;">${t.name} (€) *</label>
+                        <div class="form-group" style="margin: 0;">
+                            <label class="form-label" style="font-weight:600; font-size:0.85rem; color:#475569;">${t.name} (€) *</label>
                             <input type="number" step="0.01" class="form-control form-room-dynamic-price" data-task-type="${t.name}" value="${existingPrice}" required style="background: white;">
                         </div>
                     `;
                 });
                 dynamicPriceFieldsEditHtml += `</div>`;
             } else {
-                dynamicPriceFieldsEditHtml = `<p style="color:#ef4444; font-style:italic; font-size:0.85rem;">Nessuna tipologia di attività configurata nel sistema.</p>`;
+                dynamicPriceFieldsEditHtml = `<p style="color:#ef4444; font-style:italic; font-size:0.85rem; margin:0;">Nessuna tipologia di attività configurata nel sistema.</p>`;
             }
 
-            apriModal('Modifica Struttura e Listini', `
+            // Funzione di gestione per lo switch a 3 Tab
+            window.switchRoomTab = function(tabName) {
+                document.querySelectorAll('.room-tab-content').forEach(el => el.style.display = 'none');
+                document.querySelectorAll('.room-tab-btn').forEach(el => {
+                    el.style.borderBottom = '2px solid transparent';
+                    el.style.color = '#64748b';
+                    el.style.fontWeight = '500';
+                    el.style.background = 'transparent';
+                });
+                
+                document.getElementById('tab-room-' + tabName).style.display = 'block';
+                const activeBtn = document.getElementById('btn-tab-room-' + tabName);
+                if (activeBtn) {
+                    activeBtn.style.borderBottom = '2px solid #3b82f6';
+                    activeBtn.style.color = '#3b82f6';
+                    activeBtn.style.fontWeight = '700';
+                    activeBtn.style.background = '#eff6ff'; // Leggero sfondo per il tab attivo
+                }
+            };
+
+            apriModal(`Modifica: <span style="color:#3b82f6;">${roomData.name}</span>`, `
+                <!-- Barra di Navigazione a 3 Tab -->
+                <div style="display: flex; border-bottom: 1px solid #e2e8f0; margin-bottom: 1.5rem; margin-top: -1rem; border-radius: 8px 8px 0 0; overflow: hidden;">
+                    <button type="button" id="btn-tab-room-anagrafica" class="room-tab-btn" onclick="switchRoomTab('anagrafica')" style="flex: 1; padding: 0.85rem; background: #eff6ff; border: none; border-bottom: 2px solid #3b82f6; color: #3b82f6; font-weight: 700; cursor: pointer; transition: all 0.2s;">📄 Anagrafica</button>
+                    <button type="button" id="btn-tab-room-chiavi" class="room-tab-btn" onclick="switchRoomTab('chiavi')" style="flex: 1; padding: 0.85rem; background: transparent; border: none; border-bottom: 2px solid transparent; color: #64748b; font-weight: 500; cursor: pointer; transition: all 0.2s;">🔑 Chiavi</button>
+                    <button type="button" id="btn-tab-room-listini" class="room-tab-btn" onclick="switchRoomTab('listini')" style="flex: 1; padding: 0.85rem; background: transparent; border: none; border-bottom: 2px solid transparent; color: #64748b; font-weight: 500; cursor: pointer; transition: all 0.2s;">💶 Listini</button>
+                </div>
+
                 <form onsubmit="aggiornaCamera(event, '${param1}')">
-                    <h3 style="margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Identificazione</h3>
-                    <div class="form-group"><label class="form-label">Nome Appartamento / Camera *</label><input type="text" id="form-room-name" class="form-control" value="${roomData.name || ''}" required></div>
-                    <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Ubicazione</h3>
-                    <div class="form-row">
-                        <div class="form-group"><label class="form-label">Stato</label><input type="text" id="form-room-country" class="form-control" value="${roomData.country || 'Italia'}"></div>
-                        <div class="form-group"><label class="form-label">Città</label><input type="text" id="form-room-city" class="form-control" value="${roomData.city || ''}"></div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group"><label class="form-label">Via e Numero Civico</label><input type="text" id="form-room-address" class="form-control" value="${roomData.address || ''}"></div>
-                        <div class="form-group"><label class="form-label">CAP</label><input type="text" id="form-room-zip" class="form-control" value="${roomData.zip_code || ''}"></div>
-                    </div>
-                    <div class="form-group"><label class="form-label">Provincia (Sigla)</label><input type="text" id="form-room-province" class="form-control" maxlength="2" value="${roomData.province || ''}"></div>
                     
-                    <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Accessi e Sicurezza</h3>
-                    <div class="form-row">
-                        <div class="form-group"><label class="form-label">Lucchetto Portone</label><input type="text" id="form-building-code" class="form-control" placeholder="Nessun codice = Chiave" value="${roomData.building_code || ''}"></div>
-                        <div class="form-group"><label class="form-label">Tastierino Porta</label><input type="text" id="form-door-code" class="form-control" placeholder="Nessun codice = Chiave" value="${roomData.door_code || ''}"></div>
-                        <div class="form-group"><label class="form-label">Lucchetto Scorte</label><input type="text" id="form-lockbox-code" class="form-control" placeholder="Nessun codice = Chiave" value="${roomData.lockbox_code || ''}"></div>
+                    <!-- TAB 1: ANAGRAFICA (Ridisegnata) -->
+                    <div id="tab-room-anagrafica" class="room-tab-content" style="display: block;">
+                        
+                        <!-- Box Identificazione -->
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 1.25rem; margin-bottom: 1.5rem;">
+                            <h4 style="margin: 0 0 1rem 0; color: #0f172a; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;">
+                                🏷️ Identificazione
+                            </h4>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label class="form-label" style="color: #475569; font-weight: 600;">Nome Appartamento / Camera *</label>
+                                <input type="text" id="form-room-name" class="form-control" value="${roomData.name || ''}" style="background: white;" required>
+                            </div>
+                        </div>
+                        
+                        <!-- Box Ubicazione -->
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 1.25rem;">
+                            <h4 style="margin: 0 0 1rem 0; color: #0f172a; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;">
+                                📍 Indirizzo e Posizione
+                            </h4>
+                            
+                            <div class="form-group" style="margin-bottom: 1rem;">
+                                <label class="form-label" style="color: #475569; font-weight: 600;">Via e Numero Civico</label>
+                                <input type="text" id="form-room-address" class="form-control" value="${roomData.address || ''}" style="background: white;">
+                            </div>
+
+                            <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                <div class="form-group" style="margin: 0;">
+                                    <label class="form-label" style="color: #475569; font-weight: 600;">Città</label>
+                                    <input type="text" id="form-room-city" class="form-control" value="${roomData.city || ''}" style="background: white;">
+                                </div>
+                                <div class="form-group" style="margin: 0;">
+                                    <label class="form-label" style="color: #475569; font-weight: 600;">CAP</label>
+                                    <input type="text" id="form-room-zip" class="form-control" value="${roomData.zip_code || ''}" style="background: white;">
+                                </div>
+                                <div class="form-group" style="margin: 0;">
+                                    <label class="form-label" style="color: #475569; font-weight: 600;">Provincia</label>
+                                    <input type="text" id="form-room-province" class="form-control" maxlength="2" value="${roomData.province || ''}" placeholder="Sigla" style="background: white; text-transform: uppercase;">
+                                </div>
+                            </div>
+
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label" style="color: #475569; font-weight: 600;">Stato</label>
+                                <input type="text" id="form-room-country" class="form-control" value="${roomData.country || 'Italia'}" style="background: white;">
+                            </div>
+                        </div>
                     </div>
 
-                    <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Deroga Fatturazione Appartamento</h3>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label class="form-label">Regola di Fatturazione *</label>
-                            <select id="form-room-billing-mode" class="form-control" onchange="document.getElementById('wrap-edit-room-pax').style.display = this.value === 'pax' ? 'block' : 'none'">
-                                <option value="inherit" ${rBillMode === 'inherit' ? 'selected' : ''}>Usa la regola della Società (Predefinita)</option>
-                                <option value="task" ${rBillMode === 'task' ? 'selected' : ''}>Forza ad Intervento (Ignora società)</option>
-                                <option value="pax" ${rBillMode === 'pax' ? 'selected' : ''}>Forza a Persona (Ignora società)</option>
-                            </select>
-                        </div>
-                        <div class="form-group" id="wrap-edit-room-pax" style="display: ${rPaxDisplay};">
-                            <label class="form-label">Tariffa Specifica per Singolo Ospite (€)</label>
-                            <input type="number" step="0.01" id="form-room-pax-price" class="form-control" value="${rPaxPrice}">
+                    <!-- TAB 2: CHIAVI E ACCESSI (Ridisegnata) -->
+                    <div id="tab-room-chiavi" class="room-tab-content" style="display: none;">
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 1.25rem;">
+                            <h4 style="margin: 0 0 1rem 0; color: #0f172a; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;">
+                                🔐 Codici di Sicurezza
+                            </h4>
+                            <p style="font-size: 0.8rem; color: #64748b; margin-top: -0.5rem; margin-bottom: 1.2rem;">Lascia vuoto il campo se per l'accesso viene utilizzata una chiave fisica.</p>
+
+                            <div class="form-group" style="margin-bottom: 1rem;">
+                                <label class="form-label" style="color: #475569; font-weight: 600;">Lucchetto Portone / Cancello</label>
+                                <input type="text" id="form-building-code" class="form-control" placeholder="es. 1234A" value="${roomData.building_code || ''}" style="background: white; font-family: monospace; font-size: 1.1rem;">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 1rem;">
+                                <label class="form-label" style="color: #475569; font-weight: 600;">Tastierino Porta Ingresso</label>
+                                <input type="text" id="form-door-code" class="form-control" placeholder="es. 5678" value="${roomData.door_code || ''}" style="background: white; font-family: monospace; font-size: 1.1rem;">
+                            </div>
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label" style="color: #475569; font-weight: 600;">Lockbox (Lucchetto Scorte / Emergenza)</label>
+                                <input type="text" id="form-lockbox-code" class="form-control" placeholder="es. 0000" value="${roomData.lockbox_code || ''}" style="background: white; font-family: monospace; font-size: 1.1rem;">
+                            </div>
                         </div>
                     </div>
 
-                    <h3 style="margin-top: 2rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">Listino Prezzi B2B (€)</h3>
-                    <p style="font-size: 0.8rem; color: #64748b; margin-top: -1rem; margin-bottom: 1rem;">Compila queste tariffe fisse anche se usi la modalità "A Persona", verranno usate come piano B per interventi fuori standard.</p>
-                    ${dynamicPriceFieldsEditHtml}
+                    <!-- TAB 3: LISTINI B2B (Ridisegnata) -->
+                    <div id="tab-room-listini" class="room-tab-content" style="display: none;">
+                        
+                        <!-- Box Regole Fatturazione -->
+                        <div style="background: #fdf4ff; border: 1px solid #f87171; border-radius: 10px; padding: 1.25rem; margin-bottom: 1.5rem; border-color: #fbcfe8;">
+                            <h4 style="margin: 0 0 1rem 0; color: #831843; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;">
+                                ⚙️ Deroga Fatturazione Appartamento
+                            </h4>
+                            <div class="form-group" style="margin-bottom: ${rBillMode === 'pax' ? '1rem' : '0'};">
+                                <label class="form-label" style="color: #831843; font-weight: 600;">Regola di calcolo base *</label>
+                                <select id="form-room-billing-mode" class="form-control" onchange="document.getElementById('wrap-edit-room-pax').style.display = this.value === 'pax' ? 'block' : 'none'" style="background: white;">
+                                    <option value="inherit" ${rBillMode === 'inherit' ? 'selected' : ''}>Usa la regola della Società (Predefinita)</option>
+                                    <option value="task" ${rBillMode === 'task' ? 'selected' : ''}>Forza ad Intervento (Ignora società)</option>
+                                    <option value="pax" ${rBillMode === 'pax' ? 'selected' : ''}>Forza a Persona (Ignora società)</option>
+                                </select>
+                            </div>
+                            <div class="form-group" id="wrap-edit-room-pax" style="display: ${rPaxDisplay}; margin: 0;">
+                                <label class="form-label" style="color: #831843; font-weight: 600;">Tariffa Specifica per Singolo Ospite (€)</label>
+                                <input type="number" step="0.01" id="form-room-pax-price" class="form-control" value="${rPaxPrice}" style="background: white;">
+                            </div>
+                        </div>
 
+                        <!-- Box Listino Prezzi Fisso -->
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 1.25rem;">
+                            <h4 style="margin: 0 0 0.5rem 0; color: #0f172a; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;">
+                                📋 Listino Prezzi B2B a Intervento
+                            </h4>
+                            <p style="font-size: 0.8rem; color: #64748b; margin-bottom: 1.2rem;">Compila queste tariffe fisse. Verranno usate sempre se la modalità è "A Intervento", oppure come piano B se la modalità è "A Persona" ma non ci sono ospiti registrati.</p>
+                            
+                            ${dynamicPriceFieldsEditHtml}
+                        </div>
+                    </div>
+
+                    <!-- Azioni condivise (Fisse in basso) -->
                     <div class="form-actions" style="margin-top: 2rem; border-top: 1px solid #e2e8f0; padding-top: 1.25rem;">
                         <button type="button" class="btn-danger-text" onclick="eliminaCamera('${param1}')">Elimina Struttura</button>
                         <div class="form-actions-right">
@@ -3055,8 +3709,15 @@ function getStaffPayload() {
         phone: document.getElementById('form-staff-phone').value, 
         pin: document.getElementById('form-staff-pin').value, 
         is_active: document.getElementById('form-staff-active').checked,
-        contract_type: document.getElementById('form-staff-contract-type') ? document.getElementById('form-staff-contract-type').value : 'task',
-        contract_rate: document.getElementById('form-staff-contract-rate') ? (parseFloat(document.getElementById('form-staff-contract-rate').value) || 0) : 0
+        
+        // I nuovi campi amministrativi e contabili
+        contract_type: document.getElementById('form-staff-contract') ? document.getElementById('form-staff-contract').value : 'A chiamata',
+        payment_method: document.getElementById('form-staff-payment') ? document.getElementById('form-staff-payment').value : 'A intervento',
+        base_pay: document.getElementById('form-staff-pay') ? (parseFloat(document.getElementById('form-staff-pay').value) || 0) : 0,
+        iban: document.getElementById('form-staff-iban') ? document.getElementById('form-staff-iban').value : '',
+        
+        // Manteniamo questo per sicurezza e retrocompatibilità
+        contract_rate: document.getElementById('form-staff-pay') ? (parseFloat(document.getElementById('form-staff-pay').value) || 0) : 0
     }; 
 }
 
@@ -4152,4 +4813,369 @@ window.filtraMagazzino = function(searchTerm) {
         // Se lo scaffale non ha nessun articolo visibile, nascondi l'intera riga del settore
         shelf.style.display = hasVisibleItems ? 'block' : 'none';
     });
+};
+// ==========================================
+// DETTAGLIO TASK ESEGUITI (MODALE DA TABELLA STRUTTURE)
+// ==========================================
+window.apriDettaglioTask = async function(roomId, roomName, taskType) {
+    // Mostra subito un feedback di caricamento
+    apriModal(`Storico Interventi: ${taskType}`, `<p style="text-align:center; color:#64748b; margin: 2rem 0;">Recupero dettagli in corso...</p>`);
+
+    // Calcoliamo i limiti del mese corrente (coerenti con la vista 'rooms')
+    const ora = new Date();
+    const primoGiorno = new Date(ora.getFullYear(), ora.getMonth(), 1).toISOString().split('T')[0];
+    const ultimoGiorno = new Date(ora.getFullYear(), ora.getMonth() + 1, 0).toISOString().split('T')[0];
+
+    try {
+        // Estraiamo i task unendo l'anagrafica dell'operatore
+        const { data: tasks, error } = await supabase
+            .from('tasks')
+            .select('*, operators(first_name, last_name)')
+            .eq('room_id', roomId)
+            .eq('task_type', taskType)
+            .eq('status', 'done')
+            .gte('task_date', primoGiorno)
+            .lte('task_date', ultimoGiorno)
+            .order('task_date', { ascending: false });
+
+        if (error) throw error;
+
+        if (!tasks || tasks.length === 0) {
+            apriModal(`Storico Interventi: ${taskType}`, `<p style="text-align:center; color:#64748b; padding: 2rem;">Nessun intervento trovato per questo mese.</p>`);
+            return;
+        }
+
+        // Costruiamo la tabella
+        let htmlLista = `
+            <div style="margin-bottom: 1.5rem; background: #f8fafc; border: 1px solid #e2e8f0; padding: 1rem; border-radius: 8px;">
+                <h4 style="margin: 0 0 0.2rem 0; color: #0f172a; font-size: 1rem;">🏢 Struttura: <span style="color: #3b82f6;">${roomName}</span></h4>
+                <p style="margin: 0; font-size: 0.85rem; color: #64748b;">Elenco degli interventi "<strong style="color:#0f172a;">${taskType}</strong>" completati nel mese corrente.</p>
+            </div>
+            
+            <div class="table-responsive" style="max-height: 350px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);">
+                <table class="room-table" style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem;">
+                    <thead style="background: #f1f5f9; position: sticky; top: 0; z-index: 10;">
+                        <tr style="border-bottom: 2px solid #e2e8f0;">
+                            <th style="padding: 0.8rem 1rem; color: #475569; font-weight: 700;">Data Task</th>
+                            <th style="padding: 0.8rem 1rem; color: #475569; font-weight: 700;">Operatore</th>
+                            <th style="padding: 0.8rem 1rem; color: #475569; font-weight: 700;">Note Intervento</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+
+        tasks.forEach((t, i) => {
+            const rowBg = i % 2 === 0 ? '#ffffff' : '#f8fafc';
+            
+            // Formattazione data (es. Lun 15 Lug)
+            const dataFmt = new Date(t.task_date).toLocaleDateString('it-IT', { weekday: 'short', day: '2-digit', month: 'short' });
+            // Lettera maiuscola per il giorno
+            const dataCapitalized = dataFmt.charAt(0).toUpperCase() + dataFmt.slice(1);
+            
+            const opName = t.operators ? `${t.operators.first_name} ${t.operators.last_name || ''}` : '<span style="color:#ef4444; font-weight: 600;">⚠️ Non Assegnato</span>';
+            const noteStr = t.notes ? `<span style="color: #0f172a;">"${t.notes}"</span>` : '<span style="color:#94a3b8; font-style: italic;">Nessuna nota rilasciata</span>';
+
+            htmlLista += `
+                <tr style="background-color: ${rowBg}; border-bottom: 1px solid #e2e8f0; transition: background 0.15s;" onmouseover="this.style.backgroundColor='#eff6ff'" onmouseout="this.style.backgroundColor='${rowBg}'">
+                    <td style="padding: 0.8rem 1rem; font-weight: 600; color: #3b82f6;">📅 ${dataCapitalized}</td>
+                    <td style="padding: 0.8rem 1rem; color: #0f172a;">👤 ${opName}</td>
+                    <td style="padding: 0.8rem 1rem; color: #64748b;">${noteStr}</td>
+                </tr>
+            `;
+        });
+
+        htmlLista += `
+                    </tbody>
+                </table>
+            </div>
+            
+            <div style="margin-top: 1.5rem; text-align: right; border-top: 1px solid #e2e8f0; padding-top: 1rem;">
+                <button type="button" class="btn-secondary" onclick="chiudiModal()">Chiudi Dettagli</button>
+            </div>
+        `;
+
+        // Aggiorna il contenuto della modale
+        apriModal(`Storico Interventi: ${taskType}`, htmlLista);
+
+    } catch (err) {
+        apriModal(`Storico Interventi: ${taskType}`, `<div style="padding: 1.5rem; text-align:center;"><p style="color:#ef4444; font-weight:600;">Si è verificato un errore di connessione.</p><p style="color:#64748b; font-size:0.85rem;">${err.message}</p></div>`);
+    }
+};
+
+// ==========================================
+// FUNZIONE DI RICERCA IN TEMPO REALE - STRUTTURE
+// ==========================================
+window.filtraStrutture = function(searchTerm) {
+    const term = searchTerm.toLowerCase().trim();
+    const ownerCards = document.querySelectorAll('.owner-card');
+
+    ownerCards.forEach(card => {
+        // Prendi il nome dell'azienda per vedere se il match è sulla società
+        const ownerName = card.querySelector('.clickable-title').textContent.toLowerCase();
+        
+        // Seleziona tutte le righe della tabella relative alle camere
+        const roomRows = card.querySelectorAll('tbody tr');
+        let hasVisibleRooms = false;
+
+        roomRows.forEach(row => {
+            // Ignora la riga "Nessuna struttura o camera registrata..."
+            if (row.cells.length === 1 && row.cells[0].colSpan > 3) return;
+
+            const rowText = row.textContent.toLowerCase();
+
+            // Mostra la camera se il nome della società combacia (vogliamo vedere tutte le sue camere)
+            // OPPURE se i dati specifici della camera combaciano con la ricerca
+            if (ownerName.includes(term) || rowText.includes(term)) {
+                row.style.display = ''; 
+                hasVisibleRooms = true;
+            } else {
+                row.style.display = 'none'; 
+            }
+        });
+
+        // Se la ricerca combacia con il nome della società, o se almeno una camera è visibile, mostra l'intera card
+        if (ownerName.includes(term) || hasVisibleRooms) {
+            card.style.display = 'block';
+        } else {
+            card.style.display = 'none';
+        }
+    });
+};
+
+// ==========================================
+// FUNZIONE DI RICERCA IN TEMPO REALE - FATTURAZIONE
+// ==========================================
+window.filtraFatture = function(searchTerm) {
+    const term = searchTerm.toLowerCase().trim();
+    const billingCards = document.querySelectorAll('.owner-billing-card');
+
+    billingCards.forEach(card => {
+        // Estraiamo tutto il testo dalla card (Nome azienda, p.iva, e tutti i nomi delle stanze in tabella)
+        const cardText = card.textContent.toLowerCase();
+        
+        // Se il termine di ricerca è contenuto ovunque nella card, mostrala interamente
+        if (cardText.includes(term)) {
+            card.style.display = 'block';
+        } else {
+            card.style.display = 'none';
+        }
+    });
+};
+
+// ==========================================
+// FUNZIONI PRIMA NOTA (SPESE)
+// ==========================================
+window.selezionaMeseSpese = function(meseValue) {
+    AppState.selectedExpenseMonth = meseValue;
+    changeView('expenses');
+};
+
+window.salvaSpesa = async function(event) {
+    event.preventDefault();
+    const btn = document.getElementById('btn-salva-spesa');
+    if (btn) btn.disabled = true;
+
+    const payload = {
+        expense_date: document.getElementById('form-exp-date').value,
+        description: document.getElementById('form-exp-desc').value,
+        amount: parseFloat(document.getElementById('form-exp-amount').value) || 0,
+        category: document.getElementById('form-exp-category').value,
+        is_recurring: document.getElementById('form-exp-recurring').checked
+    };
+
+    const { error } = await supabase.from('expenses').insert([payload]);
+    
+    if (error) {
+        alert("Errore registrazione spesa: " + error.message);
+        if (btn) btn.disabled = false;
+        return;
+    }
+
+    chiudiModal();
+    changeView('expenses');
+};
+
+window.eliminaSpesa = async function(spesaId) {
+    if (!confirm("Sei sicuro di voler eliminare definitivamente questa registrazione?")) return;
+    await supabase.from('expenses').delete().eq('id', spesaId);
+    changeView('expenses');
+};
+
+// ==========================================
+// SELETTORI INTERNI (HUB GESTIONE) - SEGMENTED CONTROL
+// ==========================================
+window.disegnaSelettoriGestione = function(viewAttiva) {
+    const header = document.querySelector('.registry-header');
+    if (!header || document.getElementById('gestione-tabs-nav')) return;
+
+    // Design a "Segmented Control" con blocco contenitore visibile
+    const tabsHtml = `
+        <div id="gestione-tabs-nav" class="web-only-header" style="display: flex; background: #ffffff; padding: 0.5rem; border-radius: 16px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); margin-top: 0.5rem; margin-bottom: 2rem; width: fit-content; gap: 0.5rem;">
+            
+            <button onclick="changeView('reports')" style="
+                background: ${viewAttiva === 'reports' ? '#eff6ff' : 'transparent'}; 
+                color: ${viewAttiva === 'reports' ? '#3b82f6' : '#64748b'}; 
+                border: 1px solid ${viewAttiva === 'reports' ? '#bfdbfe' : 'transparent'}; 
+                padding: 0.75rem 1.5rem; 
+                border-radius: 12px; 
+                font-weight: 700; 
+                font-size: 0.95rem; 
+                cursor: pointer; 
+                transition: all 0.2s ease; 
+                display: flex; 
+                align-items: center; 
+                gap: 0.6rem;
+                box-shadow: ${viewAttiva === 'reports' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none'};
+            " onmouseover="if('${viewAttiva}' !== 'reports') { this.style.background='#f8fafc'; this.style.color='#0f172a'; }" onmouseout="if('${viewAttiva}' !== 'reports') { this.style.background='transparent'; this.style.color='#64748b'; }">
+                <span style="font-size: 1.1rem; opacity: ${viewAttiva === 'reports' ? '1' : '0.7'};">📊</span> 
+                Analytics
+            </button>
+            
+            <button onclick="changeView('billing')" style="
+                background: ${viewAttiva === 'billing' ? '#eff6ff' : 'transparent'}; 
+                color: ${viewAttiva === 'billing' ? '#3b82f6' : '#64748b'}; 
+                border: 1px solid ${viewAttiva === 'billing' ? '#bfdbfe' : 'transparent'}; 
+                padding: 0.75rem 1.5rem; 
+                border-radius: 12px; 
+                font-weight: 700; 
+                font-size: 0.95rem; 
+                cursor: pointer; 
+                transition: all 0.2s ease; 
+                display: flex; 
+                align-items: center; 
+                gap: 0.6rem;
+                box-shadow: ${viewAttiva === 'billing' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none'};
+            " onmouseover="if('${viewAttiva}' !== 'billing') { this.style.background='#f8fafc'; this.style.color='#0f172a'; }" onmouseout="if('${viewAttiva}' !== 'billing') { this.style.background='transparent'; this.style.color='#64748b'; }">
+                <span style="font-size: 1.1rem; opacity: ${viewAttiva === 'billing' ? '1' : '0.7'};">🧾</span> 
+                Fatture
+            </button>
+            
+            <button onclick="changeView('expenses')" style="
+                background: ${viewAttiva === 'expenses' ? '#eff6ff' : 'transparent'}; 
+                color: ${viewAttiva === 'expenses' ? '#3b82f6' : '#64748b'}; 
+                border: 1px solid ${viewAttiva === 'expenses' ? '#bfdbfe' : 'transparent'}; 
+                padding: 0.75rem 1.5rem; 
+                border-radius: 12px; 
+                font-weight: 700; 
+                font-size: 0.95rem; 
+                cursor: pointer; 
+                transition: all 0.2s ease; 
+                display: flex; 
+                align-items: center; 
+                gap: 0.6rem;
+                box-shadow: ${viewAttiva === 'expenses' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none'};
+            " onmouseover="if('${viewAttiva}' !== 'expenses') { this.style.background='#f8fafc'; this.style.color='#0f172a'; }" onmouseout="if('${viewAttiva}' !== 'expenses') { this.style.background='transparent'; this.style.color='#64748b'; }">
+                <span style="font-size: 1.1rem; opacity: ${viewAttiva === 'expenses' ? '1' : '0.7'};">💸</span> 
+                Prima Nota
+            </button>
+            
+        </div>
+    `;
+    
+    header.insertAdjacentHTML('beforebegin', tabsHtml);
+};
+
+// ==========================================
+// FUNZIONI DI CONTROLLO - VISTA STAFF E PLANNER
+// ==========================================
+
+window.setStaffViewMode = function(mode) {
+    AppState.staffViewMode = mode;
+    changeView('staff');
+};
+
+window.navigaMeseHR = function(offset) {
+    if (!window.hrPlannerDate) window.hrPlannerDate = new Date();
+    window.hrPlannerDate.setMonth(window.hrPlannerDate.getMonth() + offset);
+    changeView('staff');
+};
+
+window.ordinaPlannerHR = function(sortValue) {
+    window.hrPlannerSort = sortValue;
+    changeView('staff');
+};
+
+// GESTIONE NAVIGAZIONE A FRECCE E SCORCIATOIE DA TASTIERA
+if (!window.hrKeyboardListenerAdded) {
+    document.addEventListener('keydown', (e) => {
+        if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') return;
+        
+        const activeCell = document.activeElement;
+        if (activeCell && activeCell.classList.contains('hr-cell')) {
+            const row = parseInt(activeCell.getAttribute('data-row')) || 0;
+            const col = parseInt(activeCell.getAttribute('data-col')) || 0;
+            const totalRows = parseInt(activeCell.getAttribute('data-total-rows')) || 0;
+            const totalCols = parseInt(activeCell.getAttribute('data-total-cols')) || 0;
+
+            // Spostamento con le freccette
+            if (['ARROWUP', 'ARROWDOWN', 'ARROWLEFT', 'ARROWRIGHT'].includes(e.key.toUpperCase())) {
+                e.preventDefault();
+                let targetRow = row;
+                let targetCol = col;
+
+                if (e.key.toUpperCase() === 'ARROWUP') targetRow = Math.max(0, row - 1);
+                if (e.key.toUpperCase() === 'ARROWDOWN') targetRow = Math.min(totalRows - 1, row + 1);
+                if (e.key.toUpperCase() === 'ARROWLEFT') targetCol = Math.max(0, col - 1);
+                if (e.key.toUpperCase() === 'ARROWRIGHT') targetCol = Math.min(totalCols - 1, col + 1);
+
+                const nextCell = document.querySelector(`.hr-cell[data-row="${targetRow}"][data-col="${targetCol}"]`);
+                if (nextCell) nextCell.focus();
+                return;
+            }
+
+            // Inserimento rapido eventi
+            const key = e.key.toUpperCase();
+            const validKeys = {
+                'P': 'Presenza',
+                'M': 'Malattia',
+                'F': 'Ferie',
+                'R': 'Permesso',
+                'A': 'Assenza',
+                'BACKSPACE': 'DELETE',
+                'DELETE': 'DELETE'
+            };
+            
+            if (validKeys[key]) {
+                e.preventDefault();
+                window.salvaEventoRapido(activeCell, validKeys[key]);
+            }
+        }
+    });
+    window.hrKeyboardListenerAdded = true;
+}
+
+window.salvaEventoRapido = function(cellElement, action) {
+    const opId = cellElement.getAttribute('data-op-id');
+    const dateStr = cellElement.getAttribute('data-date');
+    const isWeekend = cellElement.getAttribute('data-is-weekend') === 'true';
+    
+    const stili = {
+        'DELETE':   { bg: isWeekend ? '#f1f5f9' : '#ffffff', color: '#475569', text: '' },
+        'Presenza': { bg: '#d1fae5', color: '#065f46', text: 'P' },
+        'Malattia': { bg: '#fed7aa', color: '#92400e', text: 'M' },
+        'Ferie':    { bg: '#fecaca', color: '#991b1b', text: 'F' },
+        'Permesso': { bg: '#e0e7ff', color: '#3730a3', text: 'R' },
+        'Assenza':  { bg: '#fbcfe8', color: '#831843', text: 'A' },
+    };
+
+    const style = stili[action];
+    
+    cellElement.style.backgroundColor = style.bg;
+    cellElement.style.color = style.color;
+    cellElement.innerText = style.text;
+
+    supabase.from('hr_events').delete().eq('operator_id', opId).eq('event_date', dateStr).then(() => {
+        if (action !== 'DELETE') {
+            supabase.from('hr_events').insert([{ operator_id: opId, event_date: dateStr, event_type: action }])
+            .select('id').single().then(({data}) => {
+                if (data && cellElement) cellElement.setAttribute('data-event-id', data.id);
+            });
+        }
+    });
+};
+
+window.gestisciClickCellaHR = function(cellElement) {
+    // Il click serve esclusivamente a selezionare la cella (focus).
+    // Nessun popup apparirà. Usa direttamente la tastiera per digitare P, M, F, R, A o Canc.
+    cellElement.focus(); 
 };

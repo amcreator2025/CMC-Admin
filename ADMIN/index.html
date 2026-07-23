@@ -130,37 +130,35 @@
         
         <nav class="sidebar" id="app-sidebar">
             <ul class="nav-links">
-                <li><a href="#" class="active" data-view="dashboard">Dashboard Admin</a></li>
-                <li><a href="#" data-view="tasks">Task e Planning</a></li>
-                <li><a href="#" data-view="rooms">Strutture e Proprietari</a></li>
-                <li><a href="#" data-view="reports">Statistiche e Flussi</a></li>
-                <li><a href="#" data-view="billing">Fatturazione</a></li>
-                <li><a href="#" data-view="magazzino">Magazzino</a></li>
-            </ul>
+        <li><a href="#" class="active" data-view="dashboard">Dashboard Admin</a></li>
+        <li><a href="#" data-view="tasks">Task e Planning</a></li>
+        <li><a href="#" data-view="rooms">Strutture e Proprietari</a></li>
+        <li><a href="#" data-view="magazzino">Magazzino</a></li>
+        <li><a href="#" data-view="gestione">Gestione</a></li>
+    </ul>
 
             <div style="position: absolute; bottom: calc(var(--spacing-md) + 60px); left: var(--spacing-md); width: calc(100% - (var(--spacing-md) * 2)); box-sizing: border-box; z-index: 10;">
-                <button onclick="changeView('add-task')" style="
-                    width: 100%;
-                    background: #3b82f6;
-                    color: white;
-                    border: none;
-                    border-radius: 12px;
-                    padding: 0.85rem 1rem;
-                    font-weight: 700;
-                    font-size: 0.95rem;
-                    cursor: pointer;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    gap: 0.5rem;
-                    box-shadow: 0 4px 10px rgba(59, 130, 246, 0.3);
-                    transition: all 0.2s ease;
-                " onmouseover="this.style.background='#2563eb'; this.style.transform='translateY(-2px)';" 
-                  onmouseout="this.style.background='#3b82f6'; this.style.transform='translateY(0)';">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                    Nuovo Task
-                </button>
-            </div>
+    <button onclick="changeView('add-task')" style="
+        width: 100%;
+        background: transparent;
+        color: #3b82f6;
+        border: 1px solid rgba(59, 130, 246, 0.4);
+        border-radius: 999px;
+        padding: 0.65rem 1rem;
+        font-weight: 600;
+        font-size: 0.9rem;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.4rem;
+        transition: all 0.2s ease;
+    " onmouseover="this.style.background='rgba(59, 130, 246, 0.05)'; this.style.borderColor='#3b82f6'; this.style.transform='translateY(-1px)';" 
+      onmouseout="this.style.background='transparent'; this.style.borderColor='rgba(59, 130, 246, 0.4)'; this.style.transform='translateY(0)';">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        Nuovo Task
+    </button>
+</div>
         </nav>
 
         <main class="main-content" id="app-content">
